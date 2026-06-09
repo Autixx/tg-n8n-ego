@@ -1,5 +1,5 @@
 bin/
 *.log
 .env
-jobs/
+/jobs/
 tmp/
