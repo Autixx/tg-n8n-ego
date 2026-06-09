@@ -1,0 +1,23 @@
+[Unit]
+Description=Homelab Codex Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=codexagent
+Group=codexagent
+EnvironmentFile=/etc/codex-agent/codex-agent.env
+WorkingDirectory=/opt/codex-agent
+ExecStart=/usr/local/bin/codex-agent
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/codex-agent
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

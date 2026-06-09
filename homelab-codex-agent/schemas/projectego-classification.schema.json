@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProjectEGO Classification Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["mode", "source_summary", "items", "needs_clarification"],
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["abstract_idea", "structured_breakdown", "create_tasks"]
+    },
+    "source_summary": {
+      "type": "string"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "type",
+          "project",
+          "module",
+          "summary",
+          "details",
+          "source_text",
+          "priority",
+          "labels",
+          "dependencies",
+          "acceptance_criteria",
+          "needs_clarification"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["idea", "task", "bug", "research", "decision"]
+          },
+          "project": {
+            "type": "string"
+          },
+          "module": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "details": {
+            "type": "string"
+          },
+          "source_text": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "acceptance_criteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "needs_clarification": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "needs_clarification": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "eventlog_summary": {
+      "type": "string"
+    }
+  }
+}
