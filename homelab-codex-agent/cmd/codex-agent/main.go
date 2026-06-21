@@ -1,10 +1,16 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"homelab-codex-agent/internal/cleanup"
 	"homelab-codex-agent/internal/codex"
 	"homelab-codex-agent/internal/config"
 	"homelab-codex-agent/internal/httpapi"
@@ -20,11 +26,38 @@ func main() {
 	}
 
 	store := jobs.NewStore(cfg.Workdir, logger)
-	runner := codex.NewRunner(cfg.CodexBin, cfg.PromptPath, cfg.Timeout, logger)
-	server := httpapi.NewServer(cfg, store, runner, logger)
+	registry := cleanup.NewRegistry(
+		cfg.Workdir,
+		cfg.AttachmentRegistryPath,
+		cfg.AttachmentRetention,
+		cfg.CleanupInterval,
+		logger,
+	)
+	if err := registry.Initialize(); err != nil {
+		logger.Fatalf("attachment registry error: %v", err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	registry.Start(ctx)
 
-	logger.Printf("listening on %s workdir=%s", cfg.Listen, cfg.Workdir)
-	if err := http.ListenAndServe(cfg.Listen, server.Routes()); err != nil {
+	runner := codex.NewRunner(cfg.CodexBin, cfg.PromptPath, cfg.Timeout, cfg.MultimodalMode, logger)
+	server := httpapi.NewServerWithRegistry(cfg, store, runner, registry, logger)
+	httpServer := &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           server.Routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			logger.Printf("HTTP shutdown error: %v", err)
+		}
+	}()
+
+	logger.Printf("listening on %s workdir=%s attachment_retention=%s cleanup_interval=%s", cfg.Listen, cfg.Workdir, cfg.AttachmentRetention, cfg.CleanupInterval)
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Fatalf("server stopped: %v", err)
 	}
 }

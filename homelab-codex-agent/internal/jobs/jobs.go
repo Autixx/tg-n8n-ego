@@ -21,20 +21,41 @@ type Store struct {
 }
 
 type Request struct {
-	Mode     string `json:"mode,omitempty"`
-	Text     string `json:"text"`
-	Source   string `json:"source,omitempty"`
-	ChatID   string `json:"chat_id,omitempty"`
-	FileName string `json:"file_name,omitempty"`
+	Mode        string              `json:"mode,omitempty"`
+	Text        string              `json:"text"`
+	Source      string              `json:"source,omitempty"`
+	ChatID      string              `json:"chat_id,omitempty"`
+	FileName    string              `json:"fileName,omitempty"`
+	Attachments []AttachmentRequest `json:"attachments,omitempty"`
+}
+
+type AttachmentRequest struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	FileName    string `json:"fileName"`
+	MIMEType    string `json:"mimeType"`
+	SizeBytes   int64  `json:"sizeBytes"`
+	DownloadURL string `json:"downloadUrl"`
+}
+
+type StagedAttachment struct {
+	ID               string `json:"id"`
+	Kind             string `json:"kind"`
+	OriginalFileName string `json:"originalFileName"`
+	FileName         string `json:"fileName"`
+	MIMEType         string `json:"mimeType"`
+	SizeBytes        int64  `json:"sizeBytes"`
+	RelativePath     string `json:"relativePath"`
 }
 
 type Metadata struct {
-	JobID     string    `json:"job_id"`
-	Mode      string    `json:"mode"`
-	Source    string    `json:"source,omitempty"`
-	ChatID    string    `json:"chat_id,omitempty"`
-	FileName  string    `json:"file_name,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	JobID       string              `json:"job_id"`
+	Mode        string              `json:"mode"`
+	Source      string              `json:"source,omitempty"`
+	ChatID      string              `json:"chat_id,omitempty"`
+	FileName    string              `json:"file_name,omitempty"`
+	Attachments []AttachmentRequest `json:"attachments,omitempty"`
+	CreatedAt   time.Time           `json:"created_at"`
 }
 
 type Status struct {
@@ -83,12 +104,13 @@ func (s *Store) Create(req Request) (Job, error) {
 
 	createdAt := time.Now().UTC()
 	metadata := Metadata{
-		JobID:     jobID,
-		Mode:      req.Mode,
-		Source:    req.Source,
-		ChatID:    req.ChatID,
-		FileName:  req.FileName,
-		CreatedAt: createdAt,
+		JobID:       jobID,
+		Mode:        req.Mode,
+		Source:      req.Source,
+		ChatID:      req.ChatID,
+		FileName:    req.FileName,
+		Attachments: req.Attachments,
+		CreatedAt:   createdAt,
 	}
 	if err := writeJSON(filepath.Join(jobDir, "metadata.json"), metadata); err != nil {
 		return Job{}, fmt.Errorf("write metadata.json: %w", err)
@@ -113,6 +135,22 @@ func (s *Store) Create(req Request) (Job, error) {
 
 	s.logger.Printf("job created job_id=%s mode=%s source=%s", jobID, req.Mode, req.Source)
 	return Job{ID: jobID, Dir: jobDir}, nil
+}
+
+func (r *Request) UnmarshalJSON(data []byte) error {
+	type requestAlias Request
+	var wire struct {
+		requestAlias
+		LegacyFileName string `json:"file_name"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*r = Request(wire.requestAlias)
+	if r.FileName == "" {
+		r.FileName = wire.LegacyFileName
+	}
+	return nil
 }
 
 func (s *Store) JobDir(jobID string) (string, error) {

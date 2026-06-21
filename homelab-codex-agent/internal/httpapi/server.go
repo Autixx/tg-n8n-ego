@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"homelab-codex-agent/internal/attachments"
 	"homelab-codex-agent/internal/auth"
 	"homelab-codex-agent/internal/codex"
 	"homelab-codex-agent/internal/config"
@@ -22,13 +24,19 @@ import (
 const maxInputBytes = 256 * 1024
 
 type Runner interface {
-	Run(jobID, jobDir string) error
+	Run(jobID, jobDir string, imagePaths []string) error
+}
+
+type AttachmentStager interface {
+	Validate(requests []jobs.AttachmentRequest) error
+	Stage(ctx context.Context, jobDir string, requests []jobs.AttachmentRequest) ([]jobs.StagedAttachment, error)
 }
 
 type Server struct {
 	cfg    config.Config
 	store  *jobs.Store
 	runner Runner
+	stager AttachmentStager
 	logger *log.Logger
 }
 
@@ -44,7 +52,22 @@ type processResponse struct {
 }
 
 func NewServer(cfg config.Config, store *jobs.Store, runner Runner, logger *log.Logger) *Server {
-	return &Server{cfg: cfg, store: store, runner: runner, logger: logger}
+	return NewServerWithRegistry(cfg, store, runner, nil, logger)
+}
+
+func NewServerWithRegistry(cfg config.Config, store *jobs.Store, runner Runner, registry attachments.FileRegistry, logger *log.Logger) *Server {
+	stager := attachments.NewStager(attachments.Config{
+		Token:      cfg.DashboardAttachmentToken,
+		MaxCount:   cfg.MaxAttachments,
+		MaxBytes:   cfg.MaxAttachmentBytes,
+		AllowImage: cfg.AllowImageAttachments,
+		Registry:   registry,
+	})
+	return NewServerWithStager(cfg, store, runner, stager, logger)
+}
+
+func NewServerWithStager(cfg config.Config, store *jobs.Store, runner Runner, stager AttachmentStager, logger *log.Logger) *Server {
+	return &Server{cfg: cfg, store: store, runner: runner, stager: stager, logger: logger}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -73,7 +96,7 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req jobs.Request
-	reader := http.MaxBytesReader(w, r.Body, maxInputBytes+4096)
+	reader := http.MaxBytesReader(w, r.Body, maxInputBytes+64*1024)
 	if err := json.NewDecoder(reader).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "", fmt.Errorf("invalid request json: %w", err))
 		return
@@ -95,12 +118,31 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "", errors.New("text exceeds 256 KiB"))
 		return
 	}
+	if err := s.stager.Validate(req.Attachments); err != nil {
+		writeError(w, http.StatusBadRequest, "", err)
+		return
+	}
 
 	job, err := s.store.Create(req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "", err)
 		return
 	}
+	staged, err := s.stager.Stage(r.Context(), job.Dir, req.Attachments)
+	if err != nil {
+		s.logger.Printf("job attachment error job_id=%s error=%v", job.ID, err)
+		status := jobs.Status{
+			JobID:     job.ID,
+			Status:    "error",
+			Mode:      req.Mode,
+			CreatedAt: time.Now().UTC(),
+			Error:     err.Error(),
+		}
+		_ = s.store.WriteStatus(job, status)
+		writeRunError(w, job, err)
+		return
+	}
+	stagingEvents, _ := os.ReadFile(filepath.Join(job.Dir, "eventlog.jsonl"))
 
 	status := jobs.Status{
 		JobID:     job.ID,
@@ -110,14 +152,23 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.store.WriteStatus(job, status)
 
-	if err := s.runner.Run(job.ID, job.Dir); err != nil {
+	imagePaths := make([]string, 0, len(staged))
+	for _, attachment := range staged {
+		imagePaths = append(imagePaths, filepath.Join(job.Dir, filepath.FromSlash(attachment.RelativePath)))
+	}
+	if err := s.runner.Run(job.ID, job.Dir, imagePaths); err != nil {
 		s.logger.Printf("job error job_id=%s error=%v", job.ID, err)
+		preserveStagingEvents(filepath.Join(job.Dir, "eventlog.jsonl"), stagingEvents)
+		if errors.Is(err, codex.ErrImageAttachmentsUnsupported) {
+			_ = attachments.AppendEvent(job.Dir, "vision_unsupported", "", "", err.Error())
+		}
 		status.Status = "error"
 		status.Error = err.Error()
 		_ = s.store.WriteStatus(job, status)
 		writeRunError(w, job, err)
 		return
 	}
+	preserveStagingEvents(filepath.Join(job.Dir, "eventlog.jsonl"), stagingEvents)
 
 	resultPath := filepath.Join(job.Dir, "result.json")
 	result, err := os.ReadFile(resultPath)
@@ -272,4 +323,22 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func preserveStagingEvents(path string, stagingEvents []byte) {
+	if len(stagingEvents) == 0 {
+		return
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		_ = os.WriteFile(path, stagingEvents, 0o600)
+		return
+	}
+	for _, action := range []string{"read_attachments", "download_attachment", "stage_attachment", "vision_attachment_ready"} {
+		if !strings.Contains(string(current), `"action":"`+action+`"`) {
+			combined := append(append([]byte(nil), stagingEvents...), current...)
+			_ = os.WriteFile(path, combined, 0o600)
+			return
+		}
+	}
 }

@@ -3,10 +3,11 @@
 Твоя задача:
 1. Прочитать input.md.
 2. Прочитать mode.txt.
-3. Прочитать список Plane Projects, если он есть рядом или в /opt/codex-agent/projects/projectego/plane_projects.json.
-4. Разложить входной текст по структуре Plane 1:1.
-5. Создать result.json по схеме /opt/codex-agent/schemas/projectego-classification.schema.json.
-6. Создать eventlog.jsonl с кратким журналом действий.
+3. Если к начальному сообщению Codex приложены изображения и в input.md есть раздел Attachments, проанализировать их визуальное содержимое.
+4. Прочитать список Plane Projects, если он есть рядом или в /opt/codex-agent/projects/projectego/plane_projects.json.
+5. Разложить входной текст и подтвержденные визуальные наблюдения по структуре Plane 1:1.
+6. Создать result.json по схеме /opt/codex-agent/schemas/projectego-classification.schema.json.
+7. Сохранить существующие записи eventlog.jsonl и дополнить файл кратким журналом действий.
 
 Режимы:
 
