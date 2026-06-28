@@ -37,7 +37,7 @@ sudo git clone https://github.com/Autixx/tg-n8n-ego.git /opt/src/codex-agent
 cd /opt/src/codex-agent
 ```
 
-Install all Debian runtime packages, run tests, build the agent, prepare runtime directories, verify Codex CLI, and install the systemd unit:
+Install all Debian runtime packages, run tests, build the agent, prepare runtime directories, verify or install Codex CLI, and install the systemd unit:
 
 ```bash
 sudo ./scripts/install.sh
@@ -59,7 +59,7 @@ sudo ./scripts/install.sh --enable  # enable at boot, do not start
 sudo ./scripts/install.sh --start   # enable and start/restart
 ```
 
-The installer requires an existing Codex CLI. If it finds Codex under `/home/...`, it resolves and copies the executable to `/usr/local/bin/codex`, then verifies as `codexagent` that `codex --version`, `codex exec --help`, and image support work with the service HOME and PATH. A missing or incompatible Codex CLI stops installation with an actionable error.
+The installer uses an existing Codex CLI when available. If Codex is missing, it installs `@openai/codex` with npm, then verifies as `codexagent` that `codex --version`, `codex exec --help`, and image support work with the service HOME and PATH. An incompatible Codex CLI stops installation with an actionable error.
 
 ## Upgrade
 
@@ -91,7 +91,9 @@ The installer adds an interactive terminal menu:
 llm-codex
 ```
 
-The menu checks `/healthz`, checks GitHub for repository updates and can run the normal upgrade flow, verifies Codex CLI availability, stops or restarts the service, and toggles systemd autostart. It uses `whiptail`, so it opens as a full terminal dialog instead of clearing and repainting the shell.
+The menu checks `/healthz`, checks GitHub for repository updates and can run the normal upgrade flow, verifies Codex CLI availability, stops or restarts the service, toggles systemd autostart, logs in to Codex through either API key or ChatGPT browser/device auth, and edits prompt files under `/opt/codex-agent/prompts`. It uses `whiptail`, so it opens as a full terminal dialog instead of clearing and repainting the shell.
+
+When selecting a prompt in `Edit prompts`, `OK` writes it to `CODEX_AGENT_PROMPT` in `/etc/codex-agent/codex-agent.env`; `Edit` opens the file with `nano` and then selects it. New prompt files are created in `/opt/codex-agent/prompts` and appear in the same menu. Restart the service after changing the active prompt.
 
 ## OS Reinstall Backup
 

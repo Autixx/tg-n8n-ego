@@ -22,10 +22,19 @@ if ! command -v go >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v whiptail >/dev/null 2>&1; then
+missing_packages=()
+for package_binary in nano npm node whiptail; do
+  if ! command -v "${package_binary}" >/dev/null 2>&1; then
+    case "${package_binary}" in
+      node) missing_packages+=(nodejs) ;;
+      *) missing_packages+=("${package_binary}") ;;
+    esac
+  fi
+done
+if [[ "${#missing_packages[@]}" -gt 0 ]]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y --no-install-recommends whiptail
+  apt-get install -y --no-install-recommends "${missing_packages[@]}"
 fi
 
 cd "${ROOT_DIR}"

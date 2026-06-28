@@ -61,7 +61,7 @@ if [[ "${SKIP_PACKAGES}" == false ]]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   apt-get install -y --no-install-recommends \
-    bash bubblewrap ca-certificates curl git jq rsync tar whiptail
+    bash bubblewrap ca-certificates curl git jq nano nodejs npm rsync tar whiptail
 fi
 
 if [[ "${SKIP_BUILD}" == false ]]; then
@@ -152,6 +152,18 @@ fi
 install -m 0644 -o root -g root \
   "${ROOT_DIR}/configs/codex-agent.service" "/etc/systemd/system/${SERVICE_NAME}"
 
+install_codex_cli() {
+  if ! command -v npm >/dev/null 2>&1; then
+    cat >&2 <<'EOF'
+Codex CLI is missing and npm is not available.
+Install Node.js/npm or rerun install.sh without --skip-packages so the installer can install npm.
+EOF
+    exit 1
+  fi
+  echo "Codex CLI was not found; installing @openai/codex with npm."
+  npm install -g @openai/codex
+}
+
 codex_source="${CODEX_INSTALL_SOURCE:-}"
 if [[ -z "${codex_source}" ]]; then
   codex_source="$(command -v codex 2>/dev/null || true)"
@@ -168,12 +180,11 @@ if [[ -z "${codex_source}" ]]; then
   done
 fi
 if [[ -z "${codex_source}" ]]; then
-  cat >&2 <<'EOF'
-Codex CLI was not found. Install the official Codex CLI and rerun this installer.
-For an npm-based installation, install Node.js/npm and run:
-  npm install -g @openai/codex
-Then verify `codex --version` as root before rerunning install.sh.
-EOF
+  install_codex_cli
+  codex_source="$(command -v codex 2>/dev/null || true)"
+fi
+if [[ -z "${codex_source}" ]]; then
+  echo "Codex CLI installation completed but codex was not found in PATH." >&2
   exit 1
 fi
 codex_real="$(readlink -f "${codex_source}")"

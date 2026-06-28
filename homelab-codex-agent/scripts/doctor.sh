@@ -18,7 +18,7 @@ else
   pass "running as $(id -un); sudo may be requested for service-user checks"
 fi
 
-for binary in /usr/local/bin/codex-agent /usr/local/bin/llm-codex /usr/local/bin/codex /usr/bin/bwrap /usr/bin/jq /usr/bin/curl /usr/bin/whiptail; do
+for binary in /usr/local/bin/codex-agent /usr/local/bin/llm-codex /usr/local/bin/codex /usr/bin/bwrap /usr/bin/jq /usr/bin/curl /usr/bin/nano /usr/bin/whiptail; do
   if [[ -x "${binary}" ]]; then
     pass "binary available: ${binary}"
   else
