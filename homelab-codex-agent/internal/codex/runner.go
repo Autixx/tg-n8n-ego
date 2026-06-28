@@ -67,16 +67,35 @@ func (r *Runner) Run(jobID, jobDir string, imagePaths []string) error {
 	defer stderr.Close()
 
 	prompt := fmt.Sprintf("Используй инструкцию из %s. Обработай input.md согласно mode.txt. Создай result.json в текущей директории. Сохрани существующие записи eventlog.jsonl и дополни файл кратким журналом своих действий.", r.promptPath)
-	args := BuildExecArgs(prompt, imagePaths)
+	args := BuildExecArgs(imagePaths)
 	cmd := exec.CommandContext(ctx, r.codexBin, args...)
 	cmd.Dir = jobDir
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("open codex stdin: %w", err)
+	}
 
-	r.logger.Printf("job running job_id=%s timeout=%s", jobID, r.timeout)
-	err = cmd.Run()
+	r.logger.Printf(
+		"job launch job_id=%s prompt_length=%d attachments=%d image_attachments=%d timeout=%s",
+		jobID,
+		len([]byte(prompt)),
+		len(imagePaths),
+		len(imagePaths),
+		r.timeout,
+	)
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		return fmt.Errorf("start codex exec: %w", err)
+	}
+	promptErr := WritePromptAndClose(stdin, prompt)
+	err = cmd.Wait()
 	if ctx.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("codex exec timed out after %s", r.timeout)
+	}
+	if promptErr != nil {
+		return fmt.Errorf("write codex prompt to stdin: %w", promptErr)
 	}
 	if err != nil {
 		return fmt.Errorf("codex exec failed: %w", err)
@@ -105,12 +124,18 @@ func HelpSupportsImages(help string) bool {
 	return strings.Contains(help, "--image")
 }
 
-func BuildExecArgs(prompt string, imagePaths []string) []string {
-	args := []string{"exec", "--sandbox", "workspace-write", "--skip-git-repo-check"}
+func BuildExecArgs(imagePaths []string) []string {
+	args := []string{"exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "-"}
 	for _, imagePath := range imagePaths {
 		args = append(args, "--image", imagePath)
 	}
-	return append(args, prompt)
+	return args
+}
+
+func WritePromptAndClose(stdin io.WriteCloser, prompt string) error {
+	_, writeErr := io.WriteString(stdin, prompt)
+	closeErr := stdin.Close()
+	return errors.Join(writeErr, closeErr)
 }
 
 func TailFile(path string, maxBytes int64) string {

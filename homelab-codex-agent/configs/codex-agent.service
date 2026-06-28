@@ -8,6 +8,8 @@ Type=simple
 User=codexagent
 Group=codexagent
 EnvironmentFile=/etc/codex-agent/codex-agent.env
+Environment=HOME=/opt/codex-agent
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/opt/codex-agent
 ExecStart=/usr/local/bin/codex-agent
 Restart=on-failure

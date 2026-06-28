@@ -8,26 +8,91 @@ The service is designed for loopback, VPN, or reverse tunnel use only. Do not ex
 
 ```text
 /opt/codex-agent/
+  .codex/
   jobs/
+  logs/
   prompts/
   schemas/
-  logs/
+  projects/
+  templates/
+  test/
+  attachment-registry.xml
 ```
 
-## Install Go On Debian 13
+The service runs as `codexagent` with `HOME=/opt/codex-agent`. Codex authentication and configuration therefore live in `/opt/codex-agent/.codex`, not `/home/codexagent`.
+
+## Fresh Install On Debian 13
+
+Go 1.22 or newer and Git are needed to clone and build the project. Install Go using the official instructions at <https://go.dev/doc/install> and verify:
 
 ```bash
-sudo apt update
-sudo apt install -y wget tar ca-certificates
-wget https://go.dev/dl/go1.22.12.linux-amd64.tar.gz
-sudo rm -rf /usr/local/go
-sudo tar -C /usr/local -xzf go1.22.12.linux-amd64.tar.gz
-echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.profile
-. ~/.profile
 go version
 ```
 
-Go 1.22 or newer is required.
+Clone the repository:
+
+```bash
+sudo mkdir -p /opt/src
+sudo git clone https://github.com/Autixx/tg-n8n-ego.git /opt/src/codex-agent
+cd /opt/src/codex-agent
+```
+
+Install all Debian runtime packages, run tests, build the agent, prepare runtime directories, verify Codex CLI, and install the systemd unit:
+
+```bash
+sudo ./scripts/install.sh
+sudo editor /etc/codex-agent/codex-agent.env
+sudo ./scripts/migrate-codex-config.sh
+sudo systemctl enable --now codex-agent
+./scripts/doctor.sh
+curl -sS http://127.0.0.1:19090/healthz | jq .
+```
+
+The repository-root scripts delegate to the implementation in `homelab-codex-agent/scripts/`, so the same commands also work when run directly from the package directory.
+
+The installer never overwrites an existing `/etc/codex-agent/codex-agent.env`. On first install it creates the file from the example. Replace both placeholder secrets before starting the service.
+
+By default, installation does not enable or start the service. Explicit alternatives are:
+
+```bash
+sudo ./scripts/install.sh --enable  # enable at boot, do not start
+sudo ./scripts/install.sh --start   # enable and start/restart
+```
+
+The installer requires an existing Codex CLI. If it finds Codex under `/home/...`, it resolves and copies the executable to `/usr/local/bin/codex`, then verifies as `codexagent` that `codex --version`, `codex exec --help`, and image support work with the service HOME and PATH. A missing or incompatible Codex CLI stops installation with an actionable error.
+
+## Upgrade
+
+From the existing checkout:
+
+```bash
+cd /opt/src/codex-agent
+git pull --ff-only
+sudo ./scripts/upgrade.sh
+```
+
+The upgrade script tests and builds before stopping the service, preserves the real env file, updates the binary/resources/unit, restarts the service, runs doctor, and checks `/healthz`. If upgrade fails after stopping an active service, it attempts to restart it.
+
+## Doctor
+
+Run diagnostics at any time:
+
+```bash
+./scripts/doctor.sh
+```
+
+Doctor verifies installed binaries, service user access, runtime resources, Codex execution and `--image` support, bubblewrap, systemd installation, and the health endpoint when the service is active.
+
+## OS Reinstall Backup
+
+Back up these files before reinstalling the VPS:
+
+- `/etc/codex-agent/codex-agent.env`
+- `/opt/codex-agent/.codex/`
+- `/home/codexagent/.codex/` if it still exists
+- manually edited `/opt/codex-agent/prompts/`, `/opt/codex-agent/schemas/`, and `/opt/codex-agent/projects/`
+- `/home/tunnel/.ssh/authorized_keys`
+- SSH daemon configuration when `PermitListen` is configured outside `authorized_keys`
 
 ## Build
 
@@ -42,15 +107,6 @@ go build -o ./bin/codex-agent ./cmd/codex-agent
 ```
 
 ## Configure
-
-Create `/etc/codex-agent/codex-agent.env` from the example:
-
-```bash
-sudo mkdir -p /etc/codex-agent
-sudo cp configs/codex-agent.env.example /etc/codex-agent/codex-agent.env
-sudo chmod 0640 /etc/codex-agent/codex-agent.env
-sudo editor /etc/codex-agent/codex-agent.env
-```
 
 Set a long random token:
 
@@ -72,16 +128,6 @@ CODEX_AGENT_CLEANUP_INTERVAL_MINUTES=60
 ```
 
 `CODEX_AGENT_MULTIMODAL_MODE` accepts `auto`, `enabled`, or `disabled`. Both `auto` and `enabled` verify that the installed `codex exec` exposes `--image`; attachment requests fail explicitly when the capability is unavailable. Text-only requests do not perform this capability check.
-
-## Install Systemd Unit
-
-```bash
-sudo ./scripts/install.sh
-sudo systemctl enable --now codex-agent
-sudo systemctl status codex-agent
-```
-
-The installer creates the `codexagent` user, `/opt/codex-agent`, `/etc/codex-agent`, copies prompts and schemas, installs `./bin/codex-agent` when present, copies the systemd unit, and runs `systemctl daemon-reload`.
 
 ## API
 

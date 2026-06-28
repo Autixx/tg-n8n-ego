@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "${ROOT_DIR}"
-mkdir -p bin
-go build -o ./bin/codex-agent ./cmd/codex-agent
+exec bash "${ROOT_DIR}/homelab-codex-agent/scripts/migrate-codex-config.sh" "$@"
