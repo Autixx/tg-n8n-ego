@@ -9,6 +9,7 @@ SERVICE_USER="codexagent"
 SERVICE_GROUP="codexagent"
 BIN_SRC="${ROOT_DIR}/bin/codex-agent"
 BIN_DST="/usr/local/bin/codex-agent"
+ADMIN_DST="/usr/local/bin/llm-codex"
 CODEX_DST="/usr/local/bin/codex"
 
 ENABLE_SERVICE=false
@@ -60,7 +61,7 @@ if [[ "${SKIP_PACKAGES}" == false ]]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   apt-get install -y --no-install-recommends \
-    bash bubblewrap ca-certificates curl git jq rsync tar
+    bash bubblewrap ca-certificates curl git jq rsync tar whiptail
 fi
 
 if [[ "${SKIP_BUILD}" == false ]]; then
@@ -132,6 +133,7 @@ install_executable_atomic() {
 }
 
 install_executable_atomic "${BIN_SRC}" "${BIN_DST}"
+install_executable_atomic "${ROOT_DIR}/scripts/llm-codex.sh" "${ADMIN_DST}"
 install -m 0640 -o root -g "${SERVICE_GROUP}" \
   "${ROOT_DIR}/configs/codex-agent.env.example" "${ETC_DIR}/codex-agent.env.example"
 if [[ ! -e "${ETC_DIR}/codex-agent.env" ]]; then
@@ -218,3 +220,5 @@ fi
 echo "Installation complete."
 echo "Edit ${ETC_DIR}/codex-agent.env, migrate/authenticate Codex if needed, then run:"
 echo "  systemctl enable --now ${SERVICE_NAME}"
+echo "Administrative menu:"
+echo "  llm-codex"

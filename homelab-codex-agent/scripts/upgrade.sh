@@ -22,6 +22,12 @@ if ! command -v go >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v whiptail >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y --no-install-recommends whiptail
+fi
+
 cd "${ROOT_DIR}"
 go test ./...
 bash ./scripts/build.sh

@@ -83,6 +83,16 @@ Run diagnostics at any time:
 
 Doctor verifies installed binaries, service user access, runtime resources, Codex execution and `--image` support, bubblewrap, systemd installation, and the health endpoint when the service is active.
 
+## Admin Menu
+
+The installer adds an interactive terminal menu:
+
+```bash
+llm-codex
+```
+
+The menu checks `/healthz`, checks GitHub for repository updates and can run the normal upgrade flow, verifies Codex CLI availability, stops or restarts the service, and toggles systemd autostart. It uses `whiptail`, so it opens as a full terminal dialog instead of clearing and repainting the shell.
+
 ## OS Reinstall Backup
 
 Back up these files before reinstalling the VPS:
