@@ -182,7 +182,7 @@ run_doctor() {
   }
 
   set +e
-  {
+  (
     printf 'llm-codex doctor\n'
     printf 'Service: %s\n' "${SERVICE_NAME}"
     printf 'Service user: %s\n' "${SERVICE_USER}"
@@ -275,7 +275,7 @@ run_doctor() {
     fi
     printf '%d unavailable or missing item(s)\n' "${failures}"
     exit 1
-  } >"${log_file}" 2>&1
+  ) >"${log_file}" 2>&1
   status=$?
   set -e
   show_file "Doctor" "${log_file}"
