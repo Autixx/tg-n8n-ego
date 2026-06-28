@@ -165,6 +165,124 @@ check_health() {
   rm -f "${log_file}"
 }
 
+run_doctor() {
+  local codex_help failures log_file status url
+  ensure_sudo
+  url="$(health_url)"
+  log_file="$(mktemp)"
+  failures=0
+
+  doctor_ok() {
+    printf '[OK] %s\n' "$*"
+  }
+
+  doctor_fail() {
+    printf '[FAIL] %s\n' "$*"
+    failures=$((failures + 1))
+  }
+
+  set +e
+  {
+    printf 'llm-codex doctor\n'
+    printf 'Service: %s\n' "${SERVICE_NAME}"
+    printf 'Service user: %s\n' "${SERVICE_USER}"
+    printf 'Health URL: %s\n\n' "${url}"
+
+    if [[ -x /usr/local/bin/codex-agent ]]; then
+      doctor_ok 'codex-agent binary: /usr/local/bin/codex-agent'
+    else
+      doctor_fail 'codex-agent binary missing or not executable: /usr/local/bin/codex-agent'
+    fi
+
+    if [[ -x /usr/local/bin/codex ]]; then
+      doctor_ok 'codex binary: /usr/local/bin/codex'
+    else
+      doctor_fail 'codex binary missing or not executable: /usr/local/bin/codex'
+    fi
+
+    if [[ -x /usr/bin/bwrap ]]; then
+      doctor_ok 'bwrap: /usr/bin/bwrap'
+    else
+      doctor_fail 'bwrap missing or not executable: /usr/bin/bwrap'
+    fi
+
+    if [[ -x /usr/bin/jq ]]; then
+      doctor_ok 'jq: /usr/bin/jq'
+    else
+      doctor_fail 'jq missing or not executable: /usr/bin/jq'
+    fi
+
+    if [[ -x /usr/bin/curl ]]; then
+      doctor_ok 'curl: /usr/bin/curl'
+    else
+      doctor_fail 'curl missing or not executable: /usr/bin/curl'
+    fi
+
+    if run_as_service test -r "${APP_DIR}/.codex/config.toml"; then
+      doctor_ok "${APP_DIR}/.codex/config.toml readable by ${SERVICE_USER}"
+    else
+      doctor_fail "${APP_DIR}/.codex/config.toml missing or not readable by ${SERVICE_USER}"
+    fi
+
+    if run_as_service test -d "${PROMPTS_DIR}"; then
+      if run_as_service sh -c "find '${PROMPTS_DIR}' -maxdepth 1 -type f -print -quit | grep -q ."; then
+        doctor_ok "prompts available: ${PROMPTS_DIR}"
+      else
+        doctor_fail "prompts directory has no prompt files: ${PROMPTS_DIR}"
+      fi
+    else
+      doctor_fail "prompts directory missing or not readable: ${PROMPTS_DIR}"
+    fi
+
+    if run_as_service test -d "${APP_DIR}/schemas"; then
+      if run_as_service sh -c "find '${APP_DIR}/schemas' -maxdepth 1 -type f -print -quit | grep -q ."; then
+        doctor_ok "schemas available: ${APP_DIR}/schemas"
+      else
+        doctor_fail "schemas directory has no schema files: ${APP_DIR}/schemas"
+      fi
+    else
+      doctor_fail "schemas directory missing or not readable: ${APP_DIR}/schemas"
+    fi
+
+    if [[ -f "/etc/systemd/system/${SERVICE_NAME}" ]]; then
+      doctor_ok "systemd unit installed: /etc/systemd/system/${SERVICE_NAME}"
+    else
+      doctor_fail "systemd unit missing: /etc/systemd/system/${SERVICE_NAME}"
+    fi
+
+    if /usr/bin/curl --fail --silent --show-error --max-time 5 "${url}" >/dev/null 2>&1; then
+      doctor_ok "healthz responds: ${url}"
+    else
+      doctor_fail "healthz unavailable: ${url}"
+    fi
+
+    if codex_help="$(run_as_service /usr/local/bin/codex exec --help 2>&1)"; then
+      doctor_ok 'codex exec --help'
+      if grep -q -- '--image' <<<"${codex_help}"; then
+        doctor_ok 'codex exec --image support'
+      else
+        doctor_fail 'codex exec --help does not expose --image'
+      fi
+    else
+      doctor_fail "codex exec --help failed: ${codex_help}"
+      doctor_fail 'codex exec --image support could not be verified'
+    fi
+
+    printf '\nDoctor result: '
+    if [[ "${failures}" -eq 0 ]]; then
+      printf 'OK\n'
+      exit 0
+    fi
+    printf '%d unavailable or missing item(s)\n' "${failures}"
+    exit 1
+  } >"${log_file}" 2>&1
+  status=$?
+  set -e
+  show_file "Doctor" "${log_file}"
+  rm -f "${log_file}"
+  return "${status}"
+}
+
 check_codex_cli() {
   local log_file status
   ensure_sudo
@@ -444,26 +562,28 @@ while true; do
   choice="$(
     whiptail --title "${TITLE}" --menu "Service: ${SERVICE_NAME}" "${HEIGHT}" "${WIDTH}" 12 \
       "1" "Check health" \
-      "2" "Check GitHub updates and upgrade" \
-      "3" "Check Codex CLI" \
-      "4" "Stop service" \
-      "5" "Restart service" \
-      "6" "Toggle service autostart" \
-      "7" "Login to Codex via" \
-      "8" "Edit prompts" \
-      "9" "Exit" \
+      "2" "Run Doctor" \
+      "3" "Check GitHub updates and upgrade" \
+      "4" "Check Codex CLI" \
+      "5" "Stop service" \
+      "6" "Restart service" \
+      "7" "Toggle service autostart" \
+      "8" "Login to Codex via" \
+      "9" "Edit prompts" \
+      "10" "Exit" \
       3>&1 1>&2 2>&3
   )" || exit 0
 
   case "${choice}" in
     1) check_health ;;
-    2) update_from_github ;;
-    3) check_codex_cli ;;
-    4) stop_service ;;
-    5) restart_service ;;
-    6) toggle_autostart ;;
-    7) login_to_codex ;;
-    8) edit_prompts ;;
-    9) exit 0 ;;
+    2) run_doctor || true ;;
+    3) update_from_github ;;
+    4) check_codex_cli ;;
+    5) stop_service ;;
+    6) restart_service ;;
+    7) toggle_autostart ;;
+    8) login_to_codex ;;
+    9) edit_prompts ;;
+    10) exit 0 ;;
   esac
 done

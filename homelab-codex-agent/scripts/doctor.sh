@@ -62,10 +62,22 @@ for resource in \
   fi
 done
 
+if [[ -d "${APP_DIR}/prompts" ]] && find "${APP_DIR}/prompts" -maxdepth 1 -type f -print -quit | grep -q .; then
+  pass "prompts are available: ${APP_DIR}/prompts"
+else
+  fail "prompts are missing or empty: ${APP_DIR}/prompts"
+fi
+
+if [[ -d "${APP_DIR}/schemas" ]] && find "${APP_DIR}/schemas" -maxdepth 1 -type f -print -quit | grep -q .; then
+  pass "schemas are available: ${APP_DIR}/schemas"
+else
+  fail "schemas are missing or empty: ${APP_DIR}/schemas"
+fi
+
 if [[ -f "${APP_DIR}/.codex/config.toml" ]]; then
   pass "Codex config exists"
 else
-  warn "${APP_DIR}/.codex/config.toml is absent; defaults may still work, but verify authentication/configuration"
+  fail "${APP_DIR}/.codex/config.toml is absent"
 fi
 
 if codex_version="$(run_as_service /usr/local/bin/codex --version 2>&1)"; then
@@ -75,13 +87,15 @@ else
 fi
 
 if codex_help="$(run_as_service /usr/local/bin/codex exec --help 2>&1)"; then
+  pass "Codex exec --help works"
   if grep -q -- '--image' <<<"${codex_help}"; then
-    pass "Codex exec supports --image"
+    pass "Codex exec exposes --image"
   else
     fail "Codex exec does not expose --image"
   fi
 else
   fail "Codex exec --help failed"
+  fail "Codex exec --image support could not be verified"
 fi
 
 if [[ -x /usr/bin/bwrap ]]; then
@@ -98,13 +112,13 @@ fi
 
 if systemctl is-active --quiet codex-agent.service 2>/dev/null; then
   pass "codex-agent.service is active"
-  if /usr/bin/curl --fail --silent --show-error --max-time 5 http://127.0.0.1:19090/healthz >/dev/null; then
-    pass "health endpoint responds"
-  else
-    fail "health endpoint did not respond"
-  fi
 else
-  warn "codex-agent.service is not active; health check skipped"
+  warn "codex-agent.service is not active"
+fi
+if /usr/bin/curl --fail --silent --show-error --max-time 5 http://127.0.0.1:19090/healthz >/dev/null; then
+  pass "healthz responds"
+else
+  fail "healthz did not respond"
 fi
 
 printf 'Doctor complete: failures=%d warnings=%d\n' "${failures}" "${warnings}"

@@ -91,7 +91,7 @@ The installer adds an interactive terminal menu:
 llm-codex
 ```
 
-The menu checks `/healthz`, checks GitHub for repository updates and can run the normal upgrade flow, verifies Codex CLI availability, stops or restarts the service, toggles systemd autostart, logs in to Codex through either API key or ChatGPT browser/device auth, and edits prompt files under `/opt/codex-agent/prompts`. It uses `whiptail`, so it opens as a full terminal dialog instead of clearing and repainting the shell.
+The menu checks `/healthz`, runs a doctor report for binaries, Codex config, prompts, schemas, systemd, health, and image-capable `codex exec`, checks GitHub for repository updates and can run the normal upgrade flow, verifies Codex CLI availability, stops or restarts the service, toggles systemd autostart, logs in to Codex through either API key or ChatGPT browser/device auth, and edits prompt files under `/opt/codex-agent/prompts`. It uses `whiptail`, so it opens as a full terminal dialog instead of clearing and repainting the shell.
 
 When selecting a prompt in `Edit prompts`, `OK` writes it to `CODEX_AGENT_PROMPT` in `/etc/codex-agent/codex-agent.env`; `Edit` opens the file with `nano` and then selects it. New prompt files are created in `/opt/codex-agent/prompts` and appear in the same menu. Restart the service after changing the active prompt.
 
