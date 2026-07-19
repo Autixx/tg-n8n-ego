@@ -42,10 +42,15 @@ ensure_sudo() {
 }
 
 run_as_service() {
+  local workdir="${APP_DIR}"
+  if [[ ! -d "${workdir}" ]]; then
+    workdir="/"
+  fi
+
   if [[ "${EUID}" -eq 0 ]]; then
-    runuser -u "${SERVICE_USER}" -- env HOME="${APP_DIR}" PATH=/usr/local/bin:/usr/bin:/bin "$@"
+    (cd "${workdir}" && runuser -u "${SERVICE_USER}" -- env HOME="${APP_DIR}" PATH=/usr/local/bin:/usr/bin:/bin "$@")
   else
-    sudo -u "${SERVICE_USER}" -- env HOME="${APP_DIR}" PATH=/usr/local/bin:/usr/bin:/bin "$@"
+    (cd "${workdir}" && sudo -u "${SERVICE_USER}" -- env HOME="${APP_DIR}" PATH=/usr/local/bin:/usr/bin:/bin "$@")
   fi
 }
 
