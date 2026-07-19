@@ -64,6 +64,7 @@ run_logged() {
   shift
   local log_file
   log_file="$(mktemp)"
+  set +e
   {
     printf '$'
     printf ' %q' "$@"
@@ -71,6 +72,7 @@ run_logged() {
     "$@"
   } >"${log_file}" 2>&1
   local status=$?
+  set -e
   if [[ "${status}" -eq 0 ]]; then
     printf '\nOK\n' >>"${log_file}"
   else
@@ -147,6 +149,7 @@ check_health() {
   local url log_file status
   url="$(health_url)"
   log_file="$(mktemp)"
+  set +e
   (
     printf 'Service: %s\n' "${SERVICE_NAME}"
     printf 'Health URL: %s\n\n' "${url}"
@@ -158,6 +161,7 @@ check_health() {
     exit "${status}"
   ) >"${log_file}" 2>&1
   status=$?
+  set -e
   if [[ "${status}" -eq 0 ]]; then
     printf '\nHealth check OK\n' >>"${log_file}"
   else
@@ -317,6 +321,7 @@ check_codex_cli() {
   local log_file status
   ensure_sudo
   log_file="$(mktemp)"
+  set +e
   (
     printf 'Codex binary: /usr/local/bin/codex\n'
     printf 'Service user: %s\n\n' "${SERVICE_USER}"
@@ -330,6 +335,7 @@ check_codex_cli() {
     fi
   ) >"${log_file}" 2>&1
   status=$?
+  set -e
   if [[ "${status}" -eq 0 ]]; then
     printf '\nCodex CLI check OK\n' >>"${log_file}"
   else
@@ -352,10 +358,12 @@ login_with_api_key() {
 
   ensure_sudo
   log_file="$(mktemp)"
+  set +e
   (
     printf '%s\n' "${api_key}" | run_as_service /usr/local/bin/codex login --with-api-key
   ) >"${log_file}" 2>&1
   status=$?
+  set -e
   unset api_key
   if [[ "${status}" -eq 0 ]]; then
     printf '\nCodex API key login OK\n' >>"${log_file}"
@@ -399,6 +407,7 @@ update_from_github() {
 
   log_file="$(mktemp)"
   state_file="$(mktemp)"
+  set +e
   (
     cd "${REPO_DIR}"
     printf 'Repository: %s\n' "${REPO_DIR}"
@@ -422,6 +431,7 @@ update_from_github() {
     } >"${state_file}"
   ) >"${log_file}" 2>&1
   status=$?
+  set -e
   if [[ "${status}" -ne 0 ]]; then
     printf '\nUpdate check FAILED: exit code %d\n' "${status}" >>"${log_file}"
     show_file "GitHub Updates" "${log_file}"
@@ -591,6 +601,7 @@ toggle_autostart() {
 check_app_server() {
   local log_file status
   log_file="$(mktemp)"
+  set +e
   (
     printf 'Service: %s\n' "${APP_SERVER_SERVICE_NAME}"
     printf 'Socket: %s\n\n' "${APP_SERVER_SOCKET}"
@@ -606,6 +617,7 @@ check_app_server() {
     fi
   ) >"${log_file}" 2>&1
   status=$?
+  set -e
   if [[ "${status}" -eq 0 ]]; then
     printf '\nCodex app-server check OK\n' >>"${log_file}"
   else
