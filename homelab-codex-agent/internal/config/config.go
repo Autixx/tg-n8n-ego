@@ -14,6 +14,7 @@ const (
 	defaultListen         = "127.0.0.1:19090"
 	defaultWorkdir        = "/opt/codex-agent"
 	defaultPrompt         = "/opt/codex-agent/prompts/projectego_router.md"
+	defaultPromptV2       = "/opt/codex-agent/prompts/projectego-decompose-v2.md"
 	defaultTimeoutSeconds = 240
 	defaultCodexBin       = "codex"
 	defaultMode           = "structured_breakdown"
@@ -23,16 +24,21 @@ const (
 	defaultMultimodalMode = "auto"
 	defaultRetentionHours = 24
 	defaultCleanupMinutes = 60
+	defaultSessionEnabled = true
+	defaultSessionTurns   = 10
+	defaultSessionAge     = 360
+	defaultSessionPurpose = "projectego-decompose"
 )
 
 type Config struct {
-	Listen      string
-	Token       string
-	Workdir     string
-	PromptPath  string
-	Timeout     time.Duration
-	CodexBin    string
-	DefaultMode string
+	Listen       string
+	Token        string
+	Workdir      string
+	PromptPath   string
+	PromptPathV2 string
+	Timeout      time.Duration
+	CodexBin     string
+	DefaultMode  string
 
 	DashboardAttachmentToken string
 	MaxAttachments           int
@@ -42,6 +48,12 @@ type Config struct {
 	AttachmentRegistryPath   string
 	AttachmentRetention      time.Duration
 	CleanupInterval          time.Duration
+
+	SessionEnabled   bool
+	SessionMaxTurns  int
+	SessionMaxAge    time.Duration
+	SessionPurpose   string
+	SessionStorePath string
 }
 
 func Load() (Config, error) {
@@ -84,16 +96,35 @@ func Load() (Config, error) {
 	if cleanupMinutes <= 0 {
 		return Config{}, errors.New("CODEX_AGENT_CLEANUP_INTERVAL_MINUTES must be positive")
 	}
+	sessionEnabled, err := boolEnv("CODEX_AGENT_SESSION_ENABLED", defaultSessionEnabled)
+	if err != nil {
+		return Config{}, err
+	}
+	sessionTurns, err := intEnv("CODEX_AGENT_SESSION_MAX_TURNS", defaultSessionTurns)
+	if err != nil {
+		return Config{}, err
+	}
+	if sessionTurns <= 0 {
+		return Config{}, errors.New("CODEX_AGENT_SESSION_MAX_TURNS must be positive")
+	}
+	sessionAgeMinutes, err := intEnv("CODEX_AGENT_SESSION_MAX_AGE_MINUTES", defaultSessionAge)
+	if err != nil {
+		return Config{}, err
+	}
+	if sessionAgeMinutes <= 0 {
+		return Config{}, errors.New("CODEX_AGENT_SESSION_MAX_AGE_MINUTES must be positive")
+	}
 	workdir := stringEnv("CODEX_AGENT_WORKDIR", defaultWorkdir)
 
 	cfg := Config{
-		Listen:      stringEnv("CODEX_AGENT_LISTEN", defaultListen),
-		Token:       strings.TrimSpace(os.Getenv("CODEX_AGENT_TOKEN")),
-		Workdir:     workdir,
-		PromptPath:  stringEnv("CODEX_AGENT_PROMPT", defaultPrompt),
-		Timeout:     time.Duration(timeoutSeconds) * time.Second,
-		CodexBin:    stringEnv("CODEX_AGENT_CODEX_BIN", defaultCodexBin),
-		DefaultMode: stringEnv("CODEX_AGENT_MODE_DEFAULT", defaultMode),
+		Listen:       stringEnv("CODEX_AGENT_LISTEN", defaultListen),
+		Token:        strings.TrimSpace(os.Getenv("CODEX_AGENT_TOKEN")),
+		Workdir:      workdir,
+		PromptPath:   stringEnv("CODEX_AGENT_PROMPT", defaultPrompt),
+		PromptPathV2: stringEnv("CODEX_AGENT_PROMPT_V2", defaultPromptV2),
+		Timeout:      time.Duration(timeoutSeconds) * time.Second,
+		CodexBin:     stringEnv("CODEX_AGENT_CODEX_BIN", defaultCodexBin),
+		DefaultMode:  stringEnv("CODEX_AGENT_MODE_DEFAULT", defaultMode),
 
 		DashboardAttachmentToken: strings.TrimSpace(os.Getenv("CODEX_AGENT_DASHBOARD_ATTACHMENT_TOKEN")),
 		MaxAttachments:           maxAttachments,
@@ -103,6 +134,11 @@ func Load() (Config, error) {
 		AttachmentRegistryPath:   stringEnv("CODEX_AGENT_ATTACHMENT_REGISTRY", filepath.Join(workdir, "attachment-registry.xml")),
 		AttachmentRetention:      time.Duration(retentionHours) * time.Hour,
 		CleanupInterval:          time.Duration(cleanupMinutes) * time.Minute,
+		SessionEnabled:           sessionEnabled,
+		SessionMaxTurns:          sessionTurns,
+		SessionMaxAge:            time.Duration(sessionAgeMinutes) * time.Minute,
+		SessionPurpose:           stringEnv("CODEX_AGENT_SESSION_PURPOSE", defaultSessionPurpose),
+		SessionStorePath:         stringEnv("CODEX_AGENT_SESSION_STORE_PATH", filepath.Join(workdir, "codex-sessions.json")),
 	}
 
 	if cfg.Token == "" {

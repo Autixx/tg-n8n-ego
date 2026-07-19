@@ -39,6 +39,11 @@ func NewRunner(codexBin, promptPath string, timeout time.Duration, multimodalMod
 }
 
 func (r *Runner) Run(jobID, jobDir string, imagePaths []string) error {
+	prompt := fmt.Sprintf("Use the instruction file at %s. Process input.md according to mode.txt. Create result.json in the current directory. Preserve existing eventlog.jsonl entries and append a short JSONL log of your actions.", r.promptPath)
+	return r.RunPrompt(jobID, jobDir, prompt, imagePaths)
+}
+
+func (r *Runner) RunPrompt(jobID, jobDir, prompt string, imagePaths []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
 	defer cancel()
 	if len(imagePaths) > 0 {
@@ -66,7 +71,6 @@ func (r *Runner) Run(jobID, jobDir string, imagePaths []string) error {
 	}
 	defer stderr.Close()
 
-	prompt := fmt.Sprintf("Используй инструкцию из %s. Обработай input.md согласно mode.txt. Создай result.json в текущей директории. Сохрани существующие записи eventlog.jsonl и дополни файл кратким журналом своих действий.", r.promptPath)
 	args := BuildExecArgs(imagePaths)
 	cmd := exec.CommandContext(ctx, r.codexBin, args...)
 	cmd.Dir = jobDir

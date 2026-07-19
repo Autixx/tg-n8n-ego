@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,13 +19,16 @@ import (
 	"homelab-codex-agent/internal/auth"
 	"homelab-codex-agent/internal/codex"
 	"homelab-codex-agent/internal/config"
+	"homelab-codex-agent/internal/decompose"
 	"homelab-codex-agent/internal/jobs"
+	"homelab-codex-agent/internal/sessions"
 )
 
 const maxInputBytes = 256 * 1024
 
 type Runner interface {
 	Run(jobID, jobDir string, imagePaths []string) error
+	RunPrompt(jobID, jobDir, prompt string, imagePaths []string) error
 }
 
 type AttachmentStager interface {
@@ -33,11 +37,12 @@ type AttachmentStager interface {
 }
 
 type Server struct {
-	cfg    config.Config
-	store  *jobs.Store
-	runner Runner
-	stager AttachmentStager
-	logger *log.Logger
+	cfg      config.Config
+	store    *jobs.Store
+	runner   Runner
+	stager   AttachmentStager
+	sessions *sessions.Store
+	logger   *log.Logger
 }
 
 type processResponse struct {
@@ -49,6 +54,32 @@ type processResponse struct {
 	Error      string           `json:"error,omitempty"`
 	StdoutTail string           `json:"stdout_tail,omitempty"`
 	StderrTail string           `json:"stderr_tail,omitempty"`
+}
+
+type decomposeRequest struct {
+	ThreadID    string                   `json:"thread_id"`
+	Mode        string                   `json:"mode,omitempty"`
+	Source      string                   `json:"source,omitempty"`
+	Text        string                   `json:"text,omitempty"`
+	Attachments []jobs.AttachmentRequest `json:"attachments,omitempty"`
+}
+
+type decomposeResponse struct {
+	JobID    string           `json:"job_id"`
+	Status   string           `json:"status"`
+	ThreadID string           `json:"thread_id"`
+	Session  sessionResponse  `json:"session"`
+	Result   decompose.Result `json:"result,omitempty"`
+	Warnings []string         `json:"warnings"`
+	Error    string           `json:"error,omitempty"`
+}
+
+type sessionResponse struct {
+	ID             string `json:"id"`
+	CodexSessionID string `json:"codex_session_id"`
+	TurnCount      int    `json:"turn_count"`
+	MaxTurns       int    `json:"max_turns"`
+	Rotated        bool   `json:"rotated"`
 }
 
 func NewServer(cfg config.Config, store *jobs.Store, runner Runner, logger *log.Logger) *Server {
@@ -67,17 +98,174 @@ func NewServerWithRegistry(cfg config.Config, store *jobs.Store, runner Runner, 
 }
 
 func NewServerWithStager(cfg config.Config, store *jobs.Store, runner Runner, stager AttachmentStager, logger *log.Logger) *Server {
-	return &Server{cfg: cfg, store: store, runner: runner, stager: stager, logger: logger}
+	return NewServerWithStagerAndSessions(cfg, store, runner, stager, sessions.NewStore(cfg.SessionStorePath), logger)
+}
+
+func NewServerWithStagerAndSessions(cfg config.Config, store *jobs.Store, runner Runner, stager AttachmentStager, sessionStore *sessions.Store, logger *log.Logger) *Server {
+	return &Server{cfg: cfg, store: store, runner: runner, stager: stager, sessions: sessionStore, logger: logger}
 }
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("POST /v1/projectego/process", s.handleProcess)
+	mux.HandleFunc("POST /v2/projectego/decompose", s.handleDecompose)
 	mux.HandleFunc("GET /v1/jobs/{job_id}", s.handleJobStatus)
 	mux.HandleFunc("GET /v1/jobs/{job_id}/result", s.handleJobResult)
 	mux.HandleFunc("GET /v1/jobs/{job_id}/eventlog", s.handleJobEventlog)
 	return mux
+}
+
+func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(w, r) {
+		return
+	}
+
+	var req decomposeRequest
+	reader := http.MaxBytesReader(w, r.Body, maxInputBytes+64*1024)
+	if err := json.NewDecoder(reader).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "", fmt.Errorf("invalid request json: %w", err))
+		return
+	}
+	req.ThreadID = strings.TrimSpace(req.ThreadID)
+	req.Mode = strings.TrimSpace(req.Mode)
+	if req.Mode == "" {
+		req.Mode = s.cfg.DefaultMode
+	}
+	if req.ThreadID == "" {
+		writeError(w, http.StatusBadRequest, "", errors.New("thread_id is required"))
+		return
+	}
+	if !config.IsAllowedMode(req.Mode) {
+		writeError(w, http.StatusBadRequest, "", fmt.Errorf("mode is not allowed: %s", req.Mode))
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" && len(req.Attachments) == 0 {
+		writeError(w, http.StatusBadRequest, "", errors.New("text is required unless attachments are present"))
+		return
+	}
+	if len([]byte(req.Text)) > maxInputBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "", errors.New("text exceeds 256 KiB"))
+		return
+	}
+
+	warnings := []string{"codex_session_resume_unavailable"}
+	if !s.cfg.SessionEnabled {
+		warnings = append(warnings, "session_manager_disabled")
+	}
+	bootstrap, err := os.ReadFile(s.cfg.PromptPathV2)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "", fmt.Errorf("read v2 prompt: %w", err))
+		return
+	}
+	bootstrapHash := fmt.Sprintf("%x", sha256.Sum256(bootstrap))
+	now := time.Now().UTC()
+	session, reused, rotatedSummary, err := s.sessions.GetActive(req.ThreadID, s.cfg.SessionPurpose, bootstrapHash, s.cfg.SessionMaxTurns, s.cfg.SessionMaxAge, now)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "", err)
+		return
+	}
+	rotated := !reused && rotatedSummary != ""
+	if !reused {
+		session, err = s.sessions.Create(req.ThreadID, s.cfg.SessionPurpose, bootstrapHash, rotatedSummary, s.cfg.SessionMaxTurns, now)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "", err)
+			return
+		}
+	}
+
+	jobReq := jobs.Request{
+		Mode:        req.Mode,
+		Text:        req.Text,
+		Source:      req.Source,
+		Attachments: req.Attachments,
+	}
+	job, err := s.store.Create(jobReq)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "", err)
+		return
+	}
+
+	staged, stagingWarnings, ok := s.stageV2(r.Context(), job.Dir, req.Text, req.Attachments)
+	warnings = append(warnings, stagingWarnings...)
+	if !ok {
+		status := jobs.Status{JobID: job.ID, Status: "error", Mode: req.Mode, CreatedAt: now, Error: strings.Join(stagingWarnings, "; ")}
+		_ = s.store.WriteStatus(job, status)
+		writeJSON(w, http.StatusBadRequest, decomposeResponse{
+			JobID: job.ID, Status: "error", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: "attachments could not be processed and no text fallback is available",
+		})
+		return
+	}
+
+	stagingEvents, _ := os.ReadFile(filepath.Join(job.Dir, "eventlog.jsonl"))
+	status := jobs.Status{JobID: job.ID, Status: "running", Mode: req.Mode, CreatedAt: now}
+	_ = s.store.WriteStatus(job, status)
+
+	imagePaths := make([]string, 0, len(staged))
+	attachmentMetadata := make([]sessions.AttachmentMetadata, 0, len(staged))
+	for _, attachment := range staged {
+		localPath := filepath.Join(job.Dir, filepath.FromSlash(attachment.RelativePath))
+		imagePaths = append(imagePaths, localPath)
+		attachmentMetadata = append(attachmentMetadata, sessions.AttachmentMetadata{
+			AttachmentID: attachment.ID,
+			Kind:         attachment.Kind,
+			FileName:     attachment.FileName,
+			MIMEType:     attachment.MIMEType,
+			SizeBytes:    attachment.SizeBytes,
+			LocalPath:    attachment.RelativePath,
+		})
+	}
+	prompt := buildV2Prompt(string(bootstrap), session.Summary, req, warnings)
+	if err := s.runner.RunPrompt(job.ID, job.Dir, prompt, imagePaths); err != nil {
+		_ = s.sessions.MarkFailed(session.ID, err.Error(), time.Now().UTC())
+		preserveStagingEvents(filepath.Join(job.Dir, "eventlog.jsonl"), stagingEvents)
+		status.Status = "error"
+		status.Error = err.Error()
+		_ = s.store.WriteStatus(job, status)
+		writeJSON(w, http.StatusInternalServerError, decomposeResponse{
+			JobID: job.ID, Status: "error", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: err.Error(),
+		})
+		return
+	}
+	preserveStagingEvents(filepath.Join(job.Dir, "eventlog.jsonl"), stagingEvents)
+
+	resultPath := filepath.Join(job.Dir, "result.json")
+	resultBytes, err := os.ReadFile(resultPath)
+	if err != nil {
+		runErr := fmt.Errorf("result.json not found for job_id=%s", job.ID)
+		_ = s.sessions.MarkFailed(session.ID, runErr.Error(), time.Now().UTC())
+		status.Status = "error"
+		status.Error = runErr.Error()
+		_ = s.store.WriteStatus(job, status)
+		writeJSON(w, http.StatusInternalServerError, decomposeResponse{
+			JobID: job.ID, Status: "error", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: runErr.Error(),
+		})
+		return
+	}
+	result, err := decompose.ParseAndValidate(resultBytes)
+	if err != nil {
+		s.logger.Printf("v2 result validation failed job_id=%s error=%v raw_result=%s", job.ID, err, resultBytes)
+		_ = s.sessions.MarkFailed(session.ID, err.Error(), time.Now().UTC())
+		status.Status = "error"
+		status.Error = err.Error()
+		_ = s.store.WriteStatus(job, status)
+		writeJSON(w, http.StatusInternalServerError, decomposeResponse{
+			JobID: job.ID, Status: "error", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: err.Error(),
+		})
+		return
+	}
+
+	session, _, err = s.sessions.RecordTurn(session.ID, req.Mode, req.Source, req.Text, resultBytes, attachmentMetadata, time.Now().UTC())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, job.ID, err)
+		return
+	}
+	status.Status = "done"
+	status.ResultPath = resultPath
+	_ = s.store.WriteStatus(job, status)
+	writeJSON(w, http.StatusOK, decomposeResponse{
+		JobID: job.ID, Status: "done", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Result: result, Warnings: warnings,
+	})
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -202,6 +390,77 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 		Eventlog: eventlog,
 		Warnings: warnings,
 	})
+}
+
+func (s *Server) stageV2(ctx context.Context, jobDir, text string, requests []jobs.AttachmentRequest) ([]jobs.StagedAttachment, []string, bool) {
+	if len(requests) == 0 {
+		return nil, nil, true
+	}
+	staged, err := s.stager.Stage(ctx, jobDir, requests)
+	if err == nil {
+		return staged, nil, true
+	}
+	warnings := []string{"attachment_processing_failed"}
+	if strings.TrimSpace(text) == "" {
+		warnings = append(warnings, "text_fallback_unavailable")
+		return nil, warnings, false
+	}
+	warnings = append(warnings, "continued_text_only")
+	return nil, warnings, true
+}
+
+func makeSessionResponse(session sessions.Session, rotated bool) sessionResponse {
+	return sessionResponse{
+		ID:             session.ID,
+		CodexSessionID: session.CodexSessionID,
+		TurnCount:      session.TurnCount,
+		MaxTurns:       session.MaxTurns,
+		Rotated:        rotated,
+	}
+}
+
+func buildV2Prompt(bootstrap, summary string, req decomposeRequest, warnings []string) string {
+	type safeAttachment struct {
+		ID        string `json:"id"`
+		Kind      string `json:"kind"`
+		FileName  string `json:"fileName"`
+		MIMEType  string `json:"mimeType"`
+		SizeBytes int64  `json:"sizeBytes"`
+	}
+	attachments := make([]safeAttachment, 0, len(req.Attachments))
+	for _, attachment := range req.Attachments {
+		attachments = append(attachments, safeAttachment{
+			ID:        attachment.ID,
+			Kind:      attachment.Kind,
+			FileName:  attachment.FileName,
+			MIMEType:  attachment.MIMEType,
+			SizeBytes: attachment.SizeBytes,
+		})
+	}
+	message := struct {
+		Mode        string           `json:"mode"`
+		Source      string           `json:"source,omitempty"`
+		Text        string           `json:"text,omitempty"`
+		Attachments []safeAttachment `json:"attachments,omitempty"`
+		Warnings    []string         `json:"warnings,omitempty"`
+	}{
+		Mode:        req.Mode,
+		Source:      req.Source,
+		Text:        req.Text,
+		Attachments: attachments,
+		Warnings:    warnings,
+	}
+	messageJSON, _ := json.MarshalIndent(message, "", "  ")
+	return fmt.Sprintf(`%s
+
+Session resume is unavailable in this runner. Use this compact session summary as context, but do not invent details:
+%s
+
+Current request:
+%s
+
+Create result.json in the current directory using the v2 output schema. Preserve existing eventlog.jsonl entries and append a short JSONL log of your actions.
+`, bootstrap, summary, string(messageJSON))
 }
 
 func (s *Server) handleJobStatus(w http.ResponseWriter, r *http.Request) {

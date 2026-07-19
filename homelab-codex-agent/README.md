@@ -9,6 +9,7 @@ The service is designed for loopback, VPN, or reverse tunnel use only. Do not ex
 ```text
 /opt/codex-agent/
   .codex/
+  codex-sessions.json
   jobs/
   logs/
   prompts/
@@ -137,6 +138,12 @@ CODEX_AGENT_MULTIMODAL_MODE=auto
 CODEX_AGENT_ATTACHMENT_REGISTRY=/opt/codex-agent/attachment-registry.xml
 CODEX_AGENT_ATTACHMENT_RETENTION_HOURS=24
 CODEX_AGENT_CLEANUP_INTERVAL_MINUTES=60
+
+CODEX_AGENT_SESSION_ENABLED=true
+CODEX_AGENT_SESSION_MAX_TURNS=10
+CODEX_AGENT_SESSION_MAX_AGE_MINUTES=360
+CODEX_AGENT_SESSION_PURPOSE=projectego-decompose
+CODEX_AGENT_SESSION_STORE_PATH=/opt/codex-agent/codex-sessions.json
 ```
 
 `CODEX_AGENT_MULTIMODAL_MODE` accepts `auto`, `enabled`, or `disabled`. Both `auto` and `enabled` verify that the installed `codex exec` exposes `--image`; attachment requests fail explicitly when the capability is unavailable. Text-only requests do not perform this capability check.
@@ -148,6 +155,56 @@ Health check:
 ```bash
 curl -sS http://127.0.0.1:19090/healthz | jq .
 ```
+
+### ProjectEGO V2 Decomposition
+
+The v2 endpoint decomposes ProjectEGO work items with `domain_hint` and `module_hint`. It does not emit Plane projects, PM board names, PM UUIDs, or n8n routing decisions.
+
+V2 keeps short-lived session metadata in `/opt/codex-agent/codex-sessions.json`. The current runner uses the stable fallback path: it stores turn history and summaries, sends bootstrap + latest summary + current compact request, and returns the warning `codex_session_resume_unavailable`. Real Codex resume can be added behind the same runner interface later without changing the v2 API.
+
+Text-only smoke test:
+
+```bash
+curl -sS -X POST \
+  http://127.0.0.1:19090/v2/projectego/decompose \
+  -H "Content-Type: application/json" \
+  -H "X-Codex-Agent-Token: $CODEX_AGENT_TOKEN" \
+  -d '{
+    "thread_id": "projectego-intake",
+    "mode": "structured_breakdown",
+    "source": "manual-test",
+    "text": "Need a stagger system for infected enemies: arm hits interrupt attacks, leg hits slow movement, torso hits build impact. Need a prototype, body-part parameters, debug UI and a test scene."
+  }' | jq .
+```
+
+Attachment metadata smoke test:
+
+```bash
+curl -sS -X POST \
+  http://127.0.0.1:19090/v2/projectego/decompose \
+  -H "Content-Type: application/json" \
+  -H "X-Codex-Agent-Token: $CODEX_AGENT_TOKEN" \
+  -d '{
+    "thread_id": "projectego-intake",
+    "mode": "structured_breakdown",
+    "source": "manual-attachment-test",
+    "text": "Analyze the image as a visual reference for UI/feedback tasks if the attachment is available.",
+    "attachments": [
+      {
+        "id": "test-image-1",
+        "kind": "image",
+        "fileName": "reference.png",
+        "mimeType": "image/png",
+        "sizeBytes": 123456,
+        "downloadUrl": "http://127.0.0.1:19100/api/internal/attachments/test-image-1"
+      }
+    ]
+  }' | jq .
+```
+
+V2 validates `result.json` in-process. Results using only legacy `project` / `module` fields are rejected; `domain_hint` and `module_hint` are required.
+
+### ProjectEGO V1 Classification
 
 ProjectEGO processing request:
 
