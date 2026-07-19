@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -26,6 +27,8 @@ import (
 )
 
 const maxInputBytes = 256 * 1024
+
+var clientRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
 
 type Runner interface {
 	Run(jobID, jobDir string, imagePaths []string) error
@@ -59,21 +62,23 @@ type processResponse struct {
 }
 
 type decomposeRequest struct {
-	ThreadID    string                   `json:"thread_id"`
-	Mode        string                   `json:"mode,omitempty"`
-	Source      string                   `json:"source,omitempty"`
-	Text        string                   `json:"text,omitempty"`
-	Attachments []jobs.AttachmentRequest `json:"attachments,omitempty"`
+	ClientRequestID string                   `json:"client_request_id,omitempty"`
+	ThreadID        string                   `json:"thread_id"`
+	Mode            string                   `json:"mode,omitempty"`
+	Source          string                   `json:"source,omitempty"`
+	Text            string                   `json:"text,omitempty"`
+	Attachments     []jobs.AttachmentRequest `json:"attachments,omitempty"`
 }
 
 type decomposeResponse struct {
-	JobID    string           `json:"job_id"`
-	Status   string           `json:"status"`
-	ThreadID string           `json:"thread_id"`
-	Session  sessionResponse  `json:"session"`
-	Result   decompose.Result `json:"result,omitempty"`
-	Warnings []string         `json:"warnings"`
-	Error    string           `json:"error,omitempty"`
+	JobID           string           `json:"job_id"`
+	Status          string           `json:"status"`
+	ClientRequestID string           `json:"client_request_id,omitempty"`
+	ThreadID        string           `json:"thread_id"`
+	Session         sessionResponse  `json:"session"`
+	Result          decompose.Result `json:"result,omitempty"`
+	Warnings        []string         `json:"warnings"`
+	Error           string           `json:"error,omitempty"`
 }
 
 type sessionResponse struct {
@@ -97,6 +102,7 @@ type outcomePayload struct {
 	Endpoint         string    `json:"endpoint"`
 	JobID            string    `json:"job_id"`
 	Status           string    `json:"status"`
+	ClientRequestID  string    `json:"client_request_id,omitempty"`
 	ThreadID         string    `json:"thread_id,omitempty"`
 	SessionID        string    `json:"session_id,omitempty"`
 	CodexSessionID   string    `json:"codex_session_id,omitempty"`
@@ -160,25 +166,57 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "", fmt.Errorf("invalid request json: %w", err))
 		return
 	}
+	req.ClientRequestID = strings.TrimSpace(req.ClientRequestID)
 	req.ThreadID = strings.TrimSpace(req.ThreadID)
 	req.Mode = strings.TrimSpace(req.Mode)
 	if req.Mode == "" {
 		req.Mode = s.cfg.DefaultMode
 	}
+	if !validClientRequestID(req.ClientRequestID) {
+		writeJSON(w, http.StatusBadRequest, decomposeResponse{
+			Status:   "error",
+			Warnings: []string{},
+			Error:    "client_request_id contains unsupported characters or is too long",
+		})
+		return
+	}
 	if req.ThreadID == "" {
-		writeError(w, http.StatusBadRequest, "", errors.New("thread_id is required"))
+		writeJSON(w, http.StatusBadRequest, decomposeResponse{
+			Status:          "error",
+			ClientRequestID: req.ClientRequestID,
+			Warnings:        []string{},
+			Error:           "thread_id is required",
+		})
 		return
 	}
 	if !config.IsAllowedMode(req.Mode) {
-		writeError(w, http.StatusBadRequest, "", fmt.Errorf("mode is not allowed: %s", req.Mode))
+		writeJSON(w, http.StatusBadRequest, decomposeResponse{
+			Status:          "error",
+			ClientRequestID: req.ClientRequestID,
+			ThreadID:        req.ThreadID,
+			Warnings:        []string{},
+			Error:           fmt.Sprintf("mode is not allowed: %s", req.Mode),
+		})
 		return
 	}
 	if strings.TrimSpace(req.Text) == "" && len(req.Attachments) == 0 {
-		writeError(w, http.StatusBadRequest, "", errors.New("text is required unless attachments are present"))
+		writeJSON(w, http.StatusBadRequest, decomposeResponse{
+			Status:          "error",
+			ClientRequestID: req.ClientRequestID,
+			ThreadID:        req.ThreadID,
+			Warnings:        []string{},
+			Error:           "text is required unless attachments are present",
+		})
 		return
 	}
 	if len([]byte(req.Text)) > maxInputBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, "", errors.New("text exceeds 256 KiB"))
+		writeJSON(w, http.StatusRequestEntityTooLarge, decomposeResponse{
+			Status:          "error",
+			ClientRequestID: req.ClientRequestID,
+			ThreadID:        req.ThreadID,
+			Warnings:        []string{},
+			Error:           "text exceeds 256 KiB",
+		})
 		return
 	}
 
@@ -188,7 +226,13 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 	}
 	bootstrap, err := os.ReadFile(s.cfg.PromptPathV2)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "", fmt.Errorf("read v2 prompt: %w", err))
+		writeJSON(w, http.StatusInternalServerError, decomposeResponse{
+			Status:          "error",
+			ClientRequestID: req.ClientRequestID,
+			ThreadID:        req.ThreadID,
+			Warnings:        warnings,
+			Error:           fmt.Sprintf("read v2 prompt: %v", err),
+		})
 		return
 	}
 	bootstrapHash := fmt.Sprintf("%x", sha256.Sum256(bootstrap))
@@ -200,14 +244,26 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 		var rotatedSummary string
 		session, reused, rotatedSummary, err = s.sessions.GetActive(req.ThreadID, s.cfg.SessionPurpose, bootstrapHash, s.cfg.SessionMaxTurns, s.cfg.SessionMaxAge, now)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "", err)
+			writeJSON(w, http.StatusInternalServerError, decomposeResponse{
+				Status:          "error",
+				ClientRequestID: req.ClientRequestID,
+				ThreadID:        req.ThreadID,
+				Warnings:        warnings,
+				Error:           err.Error(),
+			})
 			return
 		}
 		rotated = !reused && rotatedSummary != ""
 		if !reused {
 			session, err = s.sessions.Create(req.ThreadID, s.cfg.SessionPurpose, bootstrapHash, rotatedSummary, s.cfg.SessionMaxTurns, now)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "", err)
+				writeJSON(w, http.StatusInternalServerError, decomposeResponse{
+					Status:          "error",
+					ClientRequestID: req.ClientRequestID,
+					ThreadID:        req.ThreadID,
+					Warnings:        warnings,
+					Error:           err.Error(),
+				})
 				return
 			}
 		}
@@ -221,7 +277,14 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := s.store.Create(jobReq)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "", err)
+		writeJSON(w, http.StatusInternalServerError, decomposeResponse{
+			Status:          "error",
+			ClientRequestID: req.ClientRequestID,
+			ThreadID:        req.ThreadID,
+			Session:         makeSessionResponse(session, rotated),
+			Warnings:        warnings,
+			Error:           err.Error(),
+		})
 		return
 	}
 
@@ -234,6 +297,7 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 			Endpoint:         "/v2/projectego/decompose",
 			JobID:            job.ID,
 			Status:           "error",
+			ClientRequestID:  req.ClientRequestID,
 			ThreadID:         req.ThreadID,
 			SessionID:        session.ID,
 			CodexSessionID:   session.CodexSessionID,
@@ -249,7 +313,7 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 			DurationMS:       time.Since(now).Milliseconds(),
 		})
 		writeJSON(w, http.StatusBadRequest, decomposeResponse{
-			JobID: job.ID, Status: "error", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: "attachments could not be processed and no text fallback is available",
+			JobID: job.ID, Status: "error", ClientRequestID: req.ClientRequestID, ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: "attachments could not be processed and no text fallback is available",
 		})
 		return
 	}
@@ -286,6 +350,7 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 			Endpoint:         "/v2/projectego/decompose",
 			JobID:            job.ID,
 			Status:           "error",
+			ClientRequestID:  req.ClientRequestID,
 			ThreadID:         req.ThreadID,
 			SessionID:        session.ID,
 			CodexSessionID:   session.CodexSessionID,
@@ -303,7 +368,7 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 			DurationMS:       time.Since(now).Milliseconds(),
 		})
 		writeJSON(w, http.StatusInternalServerError, decomposeResponse{
-			JobID: job.ID, Status: "error", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: err.Error(),
+			JobID: job.ID, Status: "error", ClientRequestID: req.ClientRequestID, ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: err.Error(),
 		})
 		return
 	}
@@ -323,6 +388,7 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 			Endpoint:         "/v2/projectego/decompose",
 			JobID:            job.ID,
 			Status:           "error",
+			ClientRequestID:  req.ClientRequestID,
 			ThreadID:         req.ThreadID,
 			SessionID:        session.ID,
 			CodexSessionID:   session.CodexSessionID,
@@ -340,7 +406,7 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 			DurationMS:       time.Since(now).Milliseconds(),
 		})
 		writeJSON(w, http.StatusInternalServerError, decomposeResponse{
-			JobID: job.ID, Status: "error", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: runErr.Error(),
+			JobID: job.ID, Status: "error", ClientRequestID: req.ClientRequestID, ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: runErr.Error(),
 		})
 		return
 	}
@@ -357,6 +423,7 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 			Endpoint:         "/v2/projectego/decompose",
 			JobID:            job.ID,
 			Status:           "error",
+			ClientRequestID:  req.ClientRequestID,
 			ThreadID:         req.ThreadID,
 			SessionID:        session.ID,
 			CodexSessionID:   session.CodexSessionID,
@@ -374,18 +441,19 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 			DurationMS:       time.Since(now).Milliseconds(),
 		})
 		writeJSON(w, http.StatusInternalServerError, decomposeResponse{
-			JobID: job.ID, Status: "error", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: err.Error(),
+			JobID: job.ID, Status: "error", ClientRequestID: req.ClientRequestID, ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: err.Error(),
 		})
 		return
 	}
 
 	if s.cfg.SessionEnabled {
-		session, _, err = s.sessions.RecordTurn(session.ID, req.Mode, req.Source, req.Text, resultBytes, attachmentMetadata, time.Now().UTC())
+		session, _, err = s.sessions.RecordTurn(session.ID, req.ClientRequestID, req.Mode, req.Source, req.Text, resultBytes, attachmentMetadata, time.Now().UTC())
 		if err != nil {
 			s.sendOutcome(r.Context(), outcomePayload{
 				Endpoint:         "/v2/projectego/decompose",
 				JobID:            job.ID,
 				Status:           "error",
+				ClientRequestID:  req.ClientRequestID,
 				ThreadID:         req.ThreadID,
 				SessionID:        session.ID,
 				CodexSessionID:   session.CodexSessionID,
@@ -402,7 +470,15 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 				ImageCount:       countImageRequests(req.Attachments),
 				DurationMS:       time.Since(now).Milliseconds(),
 			})
-			writeError(w, http.StatusInternalServerError, job.ID, err)
+			writeJSON(w, http.StatusInternalServerError, decomposeResponse{
+				JobID:           job.ID,
+				Status:          "error",
+				ClientRequestID: req.ClientRequestID,
+				ThreadID:        req.ThreadID,
+				Session:         makeSessionResponse(session, rotated),
+				Warnings:        warnings,
+				Error:           err.Error(),
+			})
 			return
 		}
 	}
@@ -413,6 +489,7 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 		Endpoint:         "/v2/projectego/decompose",
 		JobID:            job.ID,
 		Status:           "done",
+		ClientRequestID:  req.ClientRequestID,
 		ThreadID:         req.ThreadID,
 		SessionID:        session.ID,
 		CodexSessionID:   session.CodexSessionID,
@@ -429,7 +506,7 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 		DurationMS:       time.Since(now).Milliseconds(),
 	})
 	writeJSON(w, http.StatusOK, decomposeResponse{
-		JobID: job.ID, Status: "done", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Result: result, Warnings: warnings,
+		JobID: job.ID, Status: "done", ClientRequestID: req.ClientRequestID, ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Result: result, Warnings: warnings,
 	})
 }
 
@@ -727,17 +804,19 @@ func buildV2Message(summary string, req decomposeRequest, warnings []string) str
 		})
 	}
 	message := struct {
-		Mode        string           `json:"mode"`
-		Source      string           `json:"source,omitempty"`
-		Text        string           `json:"text,omitempty"`
-		Attachments []safeAttachment `json:"attachments,omitempty"`
-		Warnings    []string         `json:"warnings,omitempty"`
+		ClientRequestID string           `json:"client_request_id,omitempty"`
+		Mode            string           `json:"mode"`
+		Source          string           `json:"source,omitempty"`
+		Text            string           `json:"text,omitempty"`
+		Attachments     []safeAttachment `json:"attachments,omitempty"`
+		Warnings        []string         `json:"warnings,omitempty"`
 	}{
-		Mode:        req.Mode,
-		Source:      req.Source,
-		Text:        req.Text,
-		Attachments: attachments,
-		Warnings:    warnings,
+		ClientRequestID: req.ClientRequestID,
+		Mode:            req.Mode,
+		Source:          req.Source,
+		Text:            req.Text,
+		Attachments:     attachments,
+		Warnings:        warnings,
 	}
 	messageJSON, _ := json.MarshalIndent(message, "", "  ")
 	return fmt.Sprintf(`Session summary:
@@ -927,6 +1006,10 @@ func countImageRequests(requests []jobs.AttachmentRequest) int {
 		}
 	}
 	return total
+}
+
+func validClientRequestID(value string) bool {
+	return value == "" || clientRequestIDPattern.MatchString(value)
 }
 
 func preserveStagingEvents(path string, stagingEvents []byte) {

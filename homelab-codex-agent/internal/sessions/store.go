@@ -36,14 +36,15 @@ type Session struct {
 }
 
 type Message struct {
-	ID         string          `json:"id"`
-	SessionID  string          `json:"session_id"`
-	Direction  string          `json:"direction"`
-	Mode       string          `json:"mode,omitempty"`
-	Source     string          `json:"source,omitempty"`
-	InputText  string          `json:"input_text,omitempty"`
-	ResultJSON json.RawMessage `json:"result_json,omitempty"`
-	CreatedAt  time.Time       `json:"created_at"`
+	ID              string          `json:"id"`
+	SessionID       string          `json:"session_id"`
+	ClientRequestID string          `json:"client_request_id,omitempty"`
+	Direction       string          `json:"direction"`
+	Mode            string          `json:"mode,omitempty"`
+	Source          string          `json:"source,omitempty"`
+	InputText       string          `json:"input_text,omitempty"`
+	ResultJSON      json.RawMessage `json:"result_json,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
 }
 
 type AttachmentMetadata struct {
@@ -133,7 +134,7 @@ func (s *Store) Create(threadID, purpose, bootstrapHash, summary string, maxTurn
 	return session, nil
 }
 
-func (s *Store) RecordTurn(sessionID, mode, source, inputText string, result json.RawMessage, attachments []AttachmentMetadata, now time.Time) (Session, Message, error) {
+func (s *Store) RecordTurn(sessionID, clientRequestID, mode, source, inputText string, result json.RawMessage, attachments []AttachmentMetadata, now time.Time) (Session, Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -156,14 +157,15 @@ func (s *Store) RecordTurn(sessionID, mode, source, inputText string, result jso
 		return Session{}, Message{}, err
 	}
 	message := Message{
-		ID:         messageID,
-		SessionID:  sessionID,
-		Direction:  "user",
-		Mode:       mode,
-		Source:     source,
-		InputText:  inputText,
-		ResultJSON: append(json.RawMessage(nil), result...),
-		CreatedAt:  now,
+		ID:              messageID,
+		SessionID:       sessionID,
+		ClientRequestID: clientRequestID,
+		Direction:       "user",
+		Mode:            mode,
+		Source:          source,
+		InputText:       inputText,
+		ResultJSON:      append(json.RawMessage(nil), result...),
+		CreatedAt:       now,
 	}
 	doc.Messages = append(doc.Messages, message)
 	for _, attachment := range attachments {

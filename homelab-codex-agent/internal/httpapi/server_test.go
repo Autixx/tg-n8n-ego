@@ -175,6 +175,64 @@ func TestV2TextAndImageAttachmentAccepted(t *testing.T) {
 	}
 }
 
+func TestV2ClientRequestIDIsEchoedStoredAndSentToRunner(t *testing.T) {
+	t.Parallel()
+	runner := &fakeRunner{}
+	cfg, server := newV2TestServer(t, runner)
+	cfg.RunnerBackend = "appserver"
+	server.cfg = cfg
+
+	response := performDecomposeRequest(t, server.Routes(), cfg.Token, `{
+		"client_request_id":"dash_test_001",
+		"thread_id":"projectego-intake","mode":"structured_breakdown","source":"test","text":"input"
+	}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var payload decomposeResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.ClientRequestID != "dash_test_001" {
+		t.Fatalf("client_request_id = %q", payload.ClientRequestID)
+	}
+	storeData, err := os.ReadFile(cfg.SessionStorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(storeData, []byte(`"client_request_id": "dash_test_001"`)) {
+		t.Fatalf("session store missing client_request_id: %s", storeData)
+	}
+	if !strings.Contains(runner.appMessage, `"client_request_id": "dash_test_001"`) {
+		t.Fatalf("runner message missing client_request_id: %s", runner.appMessage)
+	}
+}
+
+func TestV2RejectsInvalidClientRequestID(t *testing.T) {
+	t.Parallel()
+	cfg, server := newV2TestServer(t, &fakeRunner{})
+	for _, clientRequestID := range []string{
+		"bad id with spaces",
+		"bad/slash",
+		strings.Repeat("a", 129),
+	} {
+		response := performDecomposeRequest(t, server.Routes(), cfg.Token, fmt.Sprintf(`{
+			"client_request_id":%q,
+			"thread_id":"projectego-intake","mode":"structured_breakdown","source":"test","text":"input"
+		}`, clientRequestID))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("client_request_id %q status = %d, body = %s", clientRequestID, response.Code, response.Body.String())
+		}
+		var payload decomposeResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Error != "client_request_id contains unsupported characters or is too long" {
+			t.Fatalf("error = %q", payload.Error)
+		}
+	}
+}
+
 func TestV2AttachmentsOnlyImageAccepted(t *testing.T) {
 	t.Parallel()
 	dashboard := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -247,6 +305,7 @@ func TestV2SessionDisabledDoesNotWriteSessionStore(t *testing.T) {
 	cfg.SessionEnabled = false
 	server.cfg = cfg
 	response := performDecomposeRequest(t, server.Routes(), cfg.Token, `{
+		"client_request_id":"dash_test_001",
 		"thread_id":"projectego-intake","mode":"structured_breakdown","source":"test","text":"input"
 	}`)
 	if response.Code != http.StatusOK {
@@ -429,6 +488,7 @@ func TestV2OutcomeWebhookReportsFallback(t *testing.T) {
 	server.cfg = cfg
 
 	response := performDecomposeRequest(t, server.Routes(), cfg.Token, `{
+		"client_request_id":"dash_test_001",
 		"thread_id":"projectego-intake","mode":"structured_breakdown","source":"test","text":"input"
 	}`)
 	if response.Code != http.StatusOK {
@@ -439,6 +499,9 @@ func TestV2OutcomeWebhookReportsFallback(t *testing.T) {
 	}
 	if payload.Runner != "exec" || payload.PrimaryRunner != "appserver" || !payload.FallbackUsed {
 		t.Fatalf("runner outcome = %#v", payload)
+	}
+	if payload.ClientRequestID != "dash_test_001" {
+		t.Fatalf("client_request_id = %q", payload.ClientRequestID)
 	}
 	if !contains(payload.Warnings, "codex_appserver_unavailable") {
 		t.Fatalf("warnings = %#v", payload.Warnings)

@@ -37,7 +37,7 @@ func TestStoreRotatesAfterMaxTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := json.RawMessage(`{"source_summary":"first turn"}`)
-	if _, _, err := store.RecordTurn(created.ID, "structured_breakdown", "test", "input", result, nil, now.Add(time.Minute)); err != nil {
+	if _, _, err := store.RecordTurn(created.ID, "", "structured_breakdown", "test", "input", result, nil, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	_, ok, summary, err := store.GetActive("thread-1", "projectego-decompose", "hash", 1, time.Hour, now.Add(2*time.Minute))
