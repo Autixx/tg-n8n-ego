@@ -160,17 +160,23 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 	}
 	bootstrapHash := fmt.Sprintf("%x", sha256.Sum256(bootstrap))
 	now := time.Now().UTC()
-	session, reused, rotatedSummary, err := s.sessions.GetActive(req.ThreadID, s.cfg.SessionPurpose, bootstrapHash, s.cfg.SessionMaxTurns, s.cfg.SessionMaxAge, now)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "", err)
-		return
-	}
-	rotated := !reused && rotatedSummary != ""
-	if !reused {
-		session, err = s.sessions.Create(req.ThreadID, s.cfg.SessionPurpose, bootstrapHash, rotatedSummary, s.cfg.SessionMaxTurns, now)
+	session := disabledSession(req.ThreadID, s.cfg.SessionPurpose, bootstrapHash, s.cfg.SessionMaxTurns, now)
+	rotated := false
+	if s.cfg.SessionEnabled {
+		var reused bool
+		var rotatedSummary string
+		session, reused, rotatedSummary, err = s.sessions.GetActive(req.ThreadID, s.cfg.SessionPurpose, bootstrapHash, s.cfg.SessionMaxTurns, s.cfg.SessionMaxAge, now)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "", err)
 			return
+		}
+		rotated = !reused && rotatedSummary != ""
+		if !reused {
+			session, err = s.sessions.Create(req.ThreadID, s.cfg.SessionPurpose, bootstrapHash, rotatedSummary, s.cfg.SessionMaxTurns, now)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "", err)
+				return
+			}
 		}
 	}
 
@@ -217,7 +223,9 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 	}
 	prompt := buildV2Prompt(string(bootstrap), session.Summary, req, warnings)
 	if err := s.runner.RunPrompt(job.ID, job.Dir, prompt, imagePaths); err != nil {
-		_ = s.sessions.MarkFailed(session.ID, err.Error(), time.Now().UTC())
+		if s.cfg.SessionEnabled {
+			_ = s.sessions.MarkFailed(session.ID, err.Error(), time.Now().UTC())
+		}
 		preserveStagingEvents(filepath.Join(job.Dir, "eventlog.jsonl"), stagingEvents)
 		status.Status = "error"
 		status.Error = err.Error()
@@ -233,7 +241,9 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 	resultBytes, err := os.ReadFile(resultPath)
 	if err != nil {
 		runErr := fmt.Errorf("result.json not found for job_id=%s", job.ID)
-		_ = s.sessions.MarkFailed(session.ID, runErr.Error(), time.Now().UTC())
+		if s.cfg.SessionEnabled {
+			_ = s.sessions.MarkFailed(session.ID, runErr.Error(), time.Now().UTC())
+		}
 		status.Status = "error"
 		status.Error = runErr.Error()
 		_ = s.store.WriteStatus(job, status)
@@ -245,7 +255,9 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 	result, err := decompose.ParseAndValidate(resultBytes)
 	if err != nil {
 		s.logger.Printf("v2 result validation failed job_id=%s error=%v raw_result=%s", job.ID, err, resultBytes)
-		_ = s.sessions.MarkFailed(session.ID, err.Error(), time.Now().UTC())
+		if s.cfg.SessionEnabled {
+			_ = s.sessions.MarkFailed(session.ID, err.Error(), time.Now().UTC())
+		}
 		status.Status = "error"
 		status.Error = err.Error()
 		_ = s.store.WriteStatus(job, status)
@@ -255,10 +267,12 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, _, err = s.sessions.RecordTurn(session.ID, req.Mode, req.Source, req.Text, resultBytes, attachmentMetadata, time.Now().UTC())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, job.ID, err)
-		return
+	if s.cfg.SessionEnabled {
+		session, _, err = s.sessions.RecordTurn(session.ID, req.Mode, req.Source, req.Text, resultBytes, attachmentMetadata, time.Now().UTC())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, job.ID, err)
+			return
+		}
 	}
 	status.Status = "done"
 	status.ResultPath = resultPath
@@ -396,17 +410,49 @@ func (s *Server) stageV2(ctx context.Context, jobDir, text string, requests []jo
 	if len(requests) == 0 {
 		return nil, nil, true
 	}
-	staged, err := s.stager.Stage(ctx, jobDir, requests)
-	if err == nil {
-		return staged, nil, true
+	imageRequests := make([]jobs.AttachmentRequest, 0, len(requests))
+	warnings := make([]string, 0)
+	for _, request := range requests {
+		if request.Kind == "image" {
+			imageRequests = append(imageRequests, request)
+			continue
+		}
+		warnings = append(warnings, "file_text_extraction_unavailable")
 	}
-	warnings := []string{"attachment_processing_failed"}
+	if len(imageRequests) == 0 {
+		if strings.TrimSpace(text) == "" {
+			warnings = append(warnings, "text_fallback_unavailable")
+			return nil, warnings, false
+		}
+		warnings = append(warnings, "continued_text_only")
+		return nil, warnings, true
+	}
+	staged, err := s.stager.Stage(ctx, jobDir, imageRequests)
+	if err == nil {
+		return staged, warnings, true
+	}
+	warnings = append(warnings, "attachment_processing_failed")
 	if strings.TrimSpace(text) == "" {
 		warnings = append(warnings, "text_fallback_unavailable")
 		return nil, warnings, false
 	}
 	warnings = append(warnings, "continued_text_only")
 	return nil, warnings, true
+}
+
+func disabledSession(threadID, purpose, bootstrapHash string, maxTurns int, now time.Time) sessions.Session {
+	return sessions.Session{
+		ID:             "stateless-" + threadID,
+		ThreadID:       threadID,
+		Purpose:        purpose,
+		CodexSessionID: "fallback-stateless",
+		Status:         sessions.StatusClosed,
+		MaxTurns:       maxTurns,
+		BootstrapHash:  bootstrapHash,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		LastUsedAt:     now,
+	}
 }
 
 func makeSessionResponse(session sessions.Session, rotated bool) sessionResponse {

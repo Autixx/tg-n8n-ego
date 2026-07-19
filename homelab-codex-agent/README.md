@@ -162,6 +162,8 @@ The v2 endpoint decomposes ProjectEGO work items with `domain_hint` and `module_
 
 V2 keeps short-lived session metadata in `/opt/codex-agent/codex-sessions.json`. The current runner uses the stable fallback path: it stores turn history and summaries, sends bootstrap + latest summary + current compact request, and returns the warning `codex_session_resume_unavailable`. Real Codex resume can be added behind the same runner interface later without changing the v2 API.
 
+Set `CODEX_AGENT_SESSION_ENABLED=false` to run v2 without writing session state. The API response remains stable and includes `session_manager_disabled`.
+
 Text-only smoke test:
 
 ```bash
@@ -203,6 +205,8 @@ curl -sS -X POST \
 ```
 
 V2 validates `result.json` in-process. Results using only legacy `project` / `module` fields are rejected; `domain_hint` and `module_hint` are required.
+
+V2 accepts attachment metadata with `kind: "file"` but does not extract text from non-image files yet. If text is present, the request continues text-only with `file_text_extraction_unavailable`; if only unsupported files are present, v2 returns a clear warning error instead of inventing content.
 
 ### ProjectEGO V1 Classification
 

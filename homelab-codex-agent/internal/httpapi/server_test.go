@@ -22,6 +22,7 @@ import (
 type fakeRunner struct {
 	unsupported bool
 	imageCount  int
+	prompt      string
 	result      string
 }
 
@@ -29,7 +30,8 @@ func (r *fakeRunner) Run(_ string, jobDir string, imagePaths []string) error {
 	return r.RunPrompt("", jobDir, "", imagePaths)
 }
 
-func (r *fakeRunner) RunPrompt(_ string, jobDir, _ string, imagePaths []string) error {
+func (r *fakeRunner) RunPrompt(_ string, jobDir, prompt string, imagePaths []string) error {
+	r.prompt = prompt
 	r.imageCount = len(imagePaths)
 	if r.unsupported && len(imagePaths) > 0 {
 		return fmt.Errorf("%w: test CLI has no image flag", codex.ErrImageAttachmentsUnsupported)
@@ -217,6 +219,109 @@ func TestV2RejectsPlaneStyleRunnerOutput(t *testing.T) {
 	}`)
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestV2SessionDisabledDoesNotWriteSessionStore(t *testing.T) {
+	t.Parallel()
+	cfg, server := newV2TestServer(t, &fakeRunner{})
+	cfg.SessionEnabled = false
+	server.cfg = cfg
+	response := performDecomposeRequest(t, server.Routes(), cfg.Token, `{
+		"thread_id":"projectego-intake","mode":"structured_breakdown","source":"test","text":"input"
+	}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(cfg.SessionStorePath); !os.IsNotExist(err) {
+		t.Fatalf("session store exists or unexpected stat error: %v", err)
+	}
+	var payload decomposeResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(payload.Warnings, "session_manager_disabled") {
+		t.Fatalf("warnings = %#v", payload.Warnings)
+	}
+}
+
+func TestV2FileAttachmentWarnsAndContinuesWithText(t *testing.T) {
+	t.Parallel()
+	cfg, server := newV2TestServer(t, &fakeRunner{})
+	response := performDecomposeRequest(t, server.Routes(), cfg.Token, `{
+		"thread_id":"projectego-intake","mode":"structured_breakdown","source":"test","text":"summarize from text",
+		"attachments":[{
+			"id":"FILE_1","kind":"file","fileName":"notes.pdf","mimeType":"application/pdf",
+			"sizeBytes":42,"downloadUrl":"http://127.0.0.1:19100/internal/FILE_1?token=secret"
+		}]
+	}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var payload decomposeResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(payload.Warnings, "file_text_extraction_unavailable") || !contains(payload.Warnings, "continued_text_only") {
+		t.Fatalf("warnings = %#v", payload.Warnings)
+	}
+}
+
+func TestV2AttachmentsOnlyFileReturnsWarningError(t *testing.T) {
+	t.Parallel()
+	cfg, server := newV2TestServer(t, &fakeRunner{})
+	response := performDecomposeRequest(t, server.Routes(), cfg.Token, `{
+		"thread_id":"projectego-intake","mode":"structured_breakdown","source":"test",
+		"attachments":[{
+			"id":"FILE_1","kind":"file","fileName":"notes.pdf","mimeType":"application/pdf",
+			"sizeBytes":42,"downloadUrl":"http://127.0.0.1:19100/internal/FILE_1"
+		}]
+	}`)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var payload decomposeResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(payload.Warnings, "file_text_extraction_unavailable") || !contains(payload.Warnings, "text_fallback_unavailable") {
+		t.Fatalf("warnings = %#v", payload.Warnings)
+	}
+}
+
+func TestV2DoesNotStoreAttachmentSecretsOrRawBytes(t *testing.T) {
+	t.Parallel()
+	const rawBytes = "png-secret-bytes"
+	dashboard := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte(rawBytes))
+	}))
+	defer dashboard.Close()
+
+	runner := &fakeRunner{}
+	cfg, server := newV2TestServer(t, runner)
+	body := fmt.Sprintf(`{
+		"thread_id":"projectego-intake","mode":"structured_breakdown","source":"test","text":"analyze image",
+		"attachments":[{
+			"id":"ATT_1","kind":"image","fileName":"ui.png","mimeType":"image/png",
+			"sizeBytes":%d,"downloadUrl":%q
+		}]
+	}`, len(rawBytes), dashboard.URL+"/attachment?token=download-secret")
+	response := performDecomposeRequest(t, server.Routes(), cfg.Token, body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	storeData, err := os.ReadFile(cfg.SessionStorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"download-secret", dashboard.URL, rawBytes} {
+		if strings.Contains(runner.prompt, forbidden) {
+			t.Fatalf("prompt leaked %q: %s", forbidden, runner.prompt)
+		}
+		if bytes.Contains(storeData, []byte(forbidden)) {
+			t.Fatalf("session store leaked %q: %s", forbidden, storeData)
+		}
 	}
 }
 
