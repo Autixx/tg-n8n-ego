@@ -17,11 +17,12 @@ import (
 var ErrImageAttachmentsUnsupported = errors.New("image_attachments_not_supported_by_current_codex_cli")
 
 type Runner struct {
-	codexBin       string
-	promptPath     string
-	timeout        time.Duration
-	multimodalMode string
-	logger         *log.Logger
+	codexBin        string
+	promptPath      string
+	appServerSocket string
+	timeout         time.Duration
+	multimodalMode  string
+	logger          *log.Logger
 
 	capabilityOnce sync.Once
 	imageSupported bool
@@ -36,6 +37,11 @@ func NewRunner(codexBin, promptPath string, timeout time.Duration, multimodalMod
 		multimodalMode: multimodalMode,
 		logger:         logger,
 	}
+}
+
+func (r *Runner) WithAppServerSocket(socketPath string) *Runner {
+	r.appServerSocket = socketPath
+	return r
 }
 
 func (r *Runner) Run(jobID, jobDir string, imagePaths []string) error {

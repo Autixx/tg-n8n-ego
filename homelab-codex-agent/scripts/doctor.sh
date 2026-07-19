@@ -5,6 +5,8 @@ SERVICE_USER="codexagent"
 APP_DIR="/opt/codex-agent"
 ENV_FILE="/etc/codex-agent/codex-agent.env"
 SERVICE_FILE="/etc/systemd/system/codex-agent.service"
+APP_SERVER_SERVICE_FILE="/etc/systemd/system/codex-app-server.service"
+APP_SERVER_SOCKET="/opt/codex-agent/codex-app-server.sock"
 failures=0
 warnings=0
 
@@ -118,6 +120,24 @@ if [[ -f "${SERVICE_FILE}" ]]; then
   pass "systemd unit is installed"
 else
   fail "missing systemd unit: ${SERVICE_FILE}"
+fi
+
+if [[ -f "${APP_SERVER_SERVICE_FILE}" ]]; then
+  pass "Codex app-server systemd unit is installed"
+else
+  fail "missing Codex app-server unit: ${APP_SERVER_SERVICE_FILE}"
+fi
+
+if systemctl is-active --quiet codex-app-server.service 2>/dev/null; then
+  pass "codex-app-server.service is active"
+else
+  warn "codex-app-server.service is not active"
+fi
+
+if [[ -S "${APP_SERVER_SOCKET}" ]]; then
+  pass "Codex app-server socket exists: ${APP_SERVER_SOCKET}"
+else
+  warn "Codex app-server socket is absent: ${APP_SERVER_SOCKET}"
 fi
 
 if systemctl is-active --quiet codex-agent.service 2>/dev/null; then

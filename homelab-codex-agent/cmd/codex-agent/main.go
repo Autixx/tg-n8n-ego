@@ -40,7 +40,8 @@ func main() {
 	defer stop()
 	registry.Start(ctx)
 
-	runner := codex.NewRunner(cfg.CodexBin, cfg.PromptPath, cfg.Timeout, cfg.MultimodalMode, logger)
+	runner := codex.NewRunner(cfg.CodexBin, cfg.PromptPath, cfg.Timeout, cfg.MultimodalMode, logger).
+		WithAppServerSocket(cfg.AppServerSocketPath)
 	server := httpapi.NewServerWithRegistry(cfg, store, runner, registry, logger)
 	httpServer := &http.Server{
 		Addr:              cfg.Listen,

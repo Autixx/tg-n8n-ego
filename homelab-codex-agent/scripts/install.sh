@@ -151,6 +151,8 @@ fi
 
 install -m 0644 -o root -g root \
   "${ROOT_DIR}/configs/codex-agent.service" "/etc/systemd/system/${SERVICE_NAME}"
+install -m 0644 -o root -g root \
+  "${ROOT_DIR}/configs/codex-app-server.service" "/etc/systemd/system/codex-app-server.service"
 
 install_codex_cli() {
   if ! command -v npm >/dev/null 2>&1; then

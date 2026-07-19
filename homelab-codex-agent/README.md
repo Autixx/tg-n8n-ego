@@ -146,6 +146,7 @@ CODEX_AGENT_SESSION_PURPOSE=projectego-decompose
 CODEX_AGENT_SESSION_STORE_PATH=/opt/codex-agent/codex-sessions.json
 CODEX_AGENT_RUNNER=exec
 CODEX_AGENT_RUNNER_FALLBACK=exec
+CODEX_AGENT_APP_SERVER_URL=unix:///opt/codex-agent/codex-app-server.sock
 ```
 
 `CODEX_AGENT_MULTIMODAL_MODE` accepts `auto`, `enabled`, or `disabled`. Both `auto` and `enabled` verify that the installed `codex exec` exposes `--image`; attachment requests fail explicitly when the capability is unavailable. Text-only requests do not perform this capability check.
@@ -164,13 +165,30 @@ The v2 endpoint decomposes ProjectEGO work items with `domain_hint` and `module_
 
 V2 keeps short-lived session metadata in `/opt/codex-agent/codex-sessions.json`. With the default `CODEX_AGENT_RUNNER=exec`, the service uses the stable fallback path: it stores turn history and summaries, sends bootstrap + latest summary + current compact request, and returns the warning `codex_session_resume_unavailable`.
 
-Set `CODEX_AGENT_RUNNER=appserver` to use Codex App Server threads for v2. In this mode the agent starts a local stdio app-server child process for the request, creates or resumes a persisted Codex thread, sends the bootstrap prompt only when the Codex thread is created, and sends compact per-message input on later turns. If app-server fails and `CODEX_AGENT_RUNNER_FALLBACK=exec`, v2 returns `codex_appserver_unavailable` and falls back to `codex exec`.
+Set `CODEX_AGENT_RUNNER=appserver` to use Codex App Server threads for v2. In this mode the agent connects to the long-running `codex-app-server.service` through `codex app-server proxy`, creates or resumes a persisted Codex thread, sends the bootstrap prompt only when the Codex thread is created, and sends compact per-message input on later turns. If app-server fails and `CODEX_AGENT_RUNNER_FALLBACK=exec`, v2 returns `codex_appserver_unavailable` and falls back to `codex exec`.
 
 Before enabling app-server mode, verify Codex CLI support and auth as the service user:
 
 ```bash
 sudo -u codexagent HOME=/opt/codex-agent /usr/local/bin/codex app-server --help
 sudo -u codexagent HOME=/opt/codex-agent /usr/local/bin/codex login status
+```
+
+Enable the production app-server path:
+
+```bash
+sudo systemctl enable --now codex-app-server
+sudo editor /etc/codex-agent/codex-agent.env
+sudo systemctl restart codex-agent
+llm-codex
+```
+
+Set these values in `/etc/codex-agent/codex-agent.env`:
+
+```env
+CODEX_AGENT_RUNNER=appserver
+CODEX_AGENT_RUNNER_FALLBACK=exec
+CODEX_AGENT_APP_SERVER_URL=unix:///opt/codex-agent/codex-app-server.sock
 ```
 
 Set `CODEX_AGENT_SESSION_ENABLED=false` to run v2 without writing session state. The API response remains stable and includes `session_manager_disabled`.

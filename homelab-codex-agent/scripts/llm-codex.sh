@@ -2,10 +2,12 @@
 set -euo pipefail
 
 SERVICE_NAME="${CODEX_AGENT_SERVICE_NAME:-codex-agent.service}"
+APP_SERVER_SERVICE_NAME="${CODEX_AGENT_APP_SERVER_SERVICE_NAME:-codex-app-server.service}"
 SERVICE_USER="${CODEX_AGENT_SERVICE_USER:-codexagent}"
 APP_DIR="${CODEX_AGENT_APP_DIR:-/opt/codex-agent}"
 ENV_FILE="${CODEX_AGENT_ENV_FILE:-/etc/codex-agent/codex-agent.env}"
 PROMPTS_DIR="${CODEX_AGENT_PROMPTS_DIR:-${APP_DIR}/prompts}"
+APP_SERVER_SOCKET="${CODEX_AGENT_APP_SERVER_SOCKET:-${APP_DIR}/codex-app-server.sock}"
 DEFAULT_REPO_DIR="/opt/src/codex-agent"
 
 if [[ -n "${CODEX_AGENT_REPO_DIR:-}" ]]; then
@@ -248,6 +250,24 @@ run_doctor() {
       doctor_ok "systemd unit installed: /etc/systemd/system/${SERVICE_NAME}"
     else
       doctor_fail "systemd unit missing: /etc/systemd/system/${SERVICE_NAME}"
+    fi
+
+    if [[ -f "/etc/systemd/system/${APP_SERVER_SERVICE_NAME}" ]]; then
+      doctor_ok "app-server systemd unit installed: /etc/systemd/system/${APP_SERVER_SERVICE_NAME}"
+    else
+      doctor_fail "app-server systemd unit missing: /etc/systemd/system/${APP_SERVER_SERVICE_NAME}"
+    fi
+
+    if systemctl is-active --quiet "${APP_SERVER_SERVICE_NAME}" 2>/dev/null; then
+      doctor_ok "${APP_SERVER_SERVICE_NAME} is active"
+    else
+      doctor_fail "${APP_SERVER_SERVICE_NAME} is not active"
+    fi
+
+    if [[ -S "${APP_SERVER_SOCKET}" ]]; then
+      doctor_ok "app-server socket exists: ${APP_SERVER_SOCKET}"
+    else
+      doctor_fail "app-server socket missing: ${APP_SERVER_SOCKET}"
     fi
 
     if /usr/bin/curl --fail --silent --show-error --max-time 5 "${url}" >/dev/null 2>&1; then
@@ -568,6 +588,48 @@ toggle_autostart() {
   fi
 }
 
+check_app_server() {
+  local log_file status
+  log_file="$(mktemp)"
+  (
+    printf 'Service: %s\n' "${APP_SERVER_SERVICE_NAME}"
+    printf 'Socket: %s\n\n' "${APP_SERVER_SOCKET}"
+    systemctl --no-pager --full status "${APP_SERVER_SERVICE_NAME}" || true
+    printf '\n--- codex app-server daemon version ---\n'
+    run_as_service /usr/local/bin/codex app-server daemon version || true
+    printf '\n--- socket ---\n'
+    if [[ -S "${APP_SERVER_SOCKET}" ]]; then
+      ls -l "${APP_SERVER_SOCKET}"
+    else
+      printf 'missing socket\n'
+      exit 1
+    fi
+  ) >"${log_file}" 2>&1
+  status=$?
+  if [[ "${status}" -eq 0 ]]; then
+    printf '\nCodex app-server check OK\n' >>"${log_file}"
+  else
+    printf '\nCodex app-server check FAILED: exit code %d\n' "${status}" >>"${log_file}"
+  fi
+  show_file "Codex App Server" "${log_file}"
+  rm -f "${log_file}"
+}
+
+start_app_server() {
+  ensure_sudo
+  run_logged "Start Codex App Server" sudo_cmd systemctl start "${APP_SERVER_SERVICE_NAME}" || true
+}
+
+stop_app_server() {
+  ensure_sudo
+  run_logged "Stop Codex App Server" sudo_cmd systemctl stop "${APP_SERVER_SERVICE_NAME}" || true
+}
+
+restart_app_server() {
+  ensure_sudo
+  run_logged "Restart Codex App Server" sudo_cmd systemctl restart "${APP_SERVER_SERVICE_NAME}" || true
+}
+
 while true; do
   choice="$(
     whiptail --title "${TITLE}" --menu "Service: ${SERVICE_NAME}" "${HEIGHT}" "${WIDTH}" 12 \
@@ -580,7 +642,11 @@ while true; do
       "7" "Toggle service autostart" \
       "8" "Login to Codex via" \
       "9" "Edit prompts" \
-      "10" "Exit" \
+      "10" "Check Codex App Server" \
+      "11" "Start Codex App Server" \
+      "12" "Stop Codex App Server" \
+      "13" "Restart Codex App Server" \
+      "14" "Exit" \
       3>&1 1>&2 2>&3
   )" || exit 0
 
@@ -594,6 +660,10 @@ while true; do
     7) toggle_autostart ;;
     8) login_to_codex ;;
     9) edit_prompts ;;
-    10) exit 0 ;;
+    10) check_app_server ;;
+    11) start_app_server ;;
+    12) stop_app_server ;;
+    13) restart_app_server ;;
+    14) exit 0 ;;
   esac
 done

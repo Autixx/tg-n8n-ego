@@ -34,7 +34,8 @@ func (r *Runner) RunAppServer(jobID, jobDir, threadID, bootstrap, message string
 	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, r.codexBin, "app-server")
+	args := appServerArgs(r.appServerSocket)
+	cmd := exec.CommandContext(ctx, r.codexBin, args...)
 	cmd.Dir = jobDir
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -88,6 +89,13 @@ func (r *Runner) RunAppServer(jobID, jobDir, threadID, bootstrap, message string
 		return AppServerResult{}, err
 	}
 	return AppServerResult{ThreadID: threadID, UsedResume: usedResume}, nil
+}
+
+func appServerArgs(socketPath string) []string {
+	if socketPath != "" {
+		return []string{"app-server", "proxy", "--sock", socketPath}
+	}
+	return []string{"app-server"}
 }
 
 type appClient struct {

@@ -30,6 +30,7 @@ const (
 	defaultSessionPurpose = "projectego-decompose"
 	defaultRunner         = "exec"
 	defaultRunnerFallback = "exec"
+	defaultAppServerURL   = "unix:///opt/codex-agent/codex-app-server.sock"
 )
 
 type Config struct {
@@ -59,6 +60,8 @@ type Config struct {
 
 	RunnerBackend        string
 	RunnerFallback       string
+	AppServerURL         string
+	AppServerSocketPath  string
 	AppServerTurnTimeout time.Duration
 }
 
@@ -147,7 +150,12 @@ func Load() (Config, error) {
 		SessionStorePath:         stringEnv("CODEX_AGENT_SESSION_STORE_PATH", filepath.Join(workdir, "codex-sessions.json")),
 		RunnerBackend:            strings.ToLower(stringEnv("CODEX_AGENT_RUNNER", defaultRunner)),
 		RunnerFallback:           strings.ToLower(stringEnv("CODEX_AGENT_RUNNER_FALLBACK", defaultRunnerFallback)),
+		AppServerURL:             stringEnv("CODEX_AGENT_APP_SERVER_URL", defaultAppServerURL),
 		AppServerTurnTimeout:     time.Duration(timeoutSeconds) * time.Second,
+	}
+	cfg.AppServerSocketPath, err = parseAppServerSocketPath(cfg.AppServerURL)
+	if err != nil {
+		return Config{}, err
 	}
 
 	if cfg.Token == "" {
@@ -246,4 +254,19 @@ func IsAllowedRunnerFallback(runner string) bool {
 	default:
 		return false
 	}
+}
+
+func parseAppServerSocketPath(rawURL string) (string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" || rawURL == "off" {
+		return "", nil
+	}
+	if !strings.HasPrefix(rawURL, "unix://") {
+		return "", fmt.Errorf("CODEX_AGENT_APP_SERVER_URL must be unix://PATH or off")
+	}
+	path := strings.TrimPrefix(rawURL, "unix://")
+	if path == "" {
+		return "", errors.New("CODEX_AGENT_APP_SERVER_URL unix socket path is required")
+	}
+	return path, nil
 }

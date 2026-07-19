@@ -17,6 +17,7 @@ func TestAttachmentDefaults(t *testing.T) {
 	t.Setenv("CODEX_AGENT_CLEANUP_INTERVAL_MINUTES", "")
 	t.Setenv("CODEX_AGENT_RUNNER", "")
 	t.Setenv("CODEX_AGENT_RUNNER_FALLBACK", "")
+	t.Setenv("CODEX_AGENT_APP_SERVER_URL", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -46,6 +47,9 @@ func TestAttachmentDefaults(t *testing.T) {
 	if cfg.RunnerFallback != "exec" {
 		t.Fatalf("RunnerFallback = %q", cfg.RunnerFallback)
 	}
+	if cfg.AppServerSocketPath != "/opt/codex-agent/codex-app-server.sock" {
+		t.Fatalf("AppServerSocketPath = %q", cfg.AppServerSocketPath)
+	}
 }
 
 func TestInvalidMultimodalMode(t *testing.T) {
@@ -59,6 +63,14 @@ func TestInvalidMultimodalMode(t *testing.T) {
 func TestInvalidRunnerMode(t *testing.T) {
 	t.Setenv("CODEX_AGENT_TOKEN", "agent-token")
 	t.Setenv("CODEX_AGENT_RUNNER", "resume-cli")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() unexpectedly succeeded")
+	}
+}
+
+func TestInvalidAppServerURL(t *testing.T) {
+	t.Setenv("CODEX_AGENT_TOKEN", "agent-token")
+	t.Setenv("CODEX_AGENT_APP_SERVER_URL", "ws://127.0.0.1:4500")
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() unexpectedly succeeded")
 	}

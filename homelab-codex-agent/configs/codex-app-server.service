@@ -1,0 +1,26 @@
+[Unit]
+Description=Codex App Server for Homelab Codex Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=codexagent
+Group=codexagent
+Environment=HOME=/opt/codex-agent
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/opt/codex-agent
+ExecStartPre=/usr/bin/rm -f /opt/codex-agent/codex-app-server.sock
+ExecStart=/usr/local/bin/codex app-server --listen unix:///opt/codex-agent/codex-app-server.sock
+ExecStopPost=/usr/bin/rm -f /opt/codex-agent/codex-app-server.sock
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/codex-agent
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
