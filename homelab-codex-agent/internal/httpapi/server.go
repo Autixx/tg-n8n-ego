@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -81,6 +82,37 @@ type sessionResponse struct {
 	TurnCount      int    `json:"turn_count"`
 	MaxTurns       int    `json:"max_turns"`
 	Rotated        bool   `json:"rotated"`
+}
+
+type runOutcome struct {
+	Runner         string
+	PrimaryRunner  string
+	FallbackRunner string
+	FallbackUsed   bool
+}
+
+type outcomePayload struct {
+	Event            string    `json:"event"`
+	Version          int       `json:"version"`
+	Endpoint         string    `json:"endpoint"`
+	JobID            string    `json:"job_id"`
+	Status           string    `json:"status"`
+	ThreadID         string    `json:"thread_id,omitempty"`
+	SessionID        string    `json:"session_id,omitempty"`
+	CodexSessionID   string    `json:"codex_session_id,omitempty"`
+	SessionTurnCount int       `json:"session_turn_count,omitempty"`
+	SessionMaxTurns  int       `json:"session_max_turns,omitempty"`
+	SessionRotated   bool      `json:"session_rotated,omitempty"`
+	Runner           string    `json:"runner,omitempty"`
+	PrimaryRunner    string    `json:"primary_runner,omitempty"`
+	FallbackRunner   string    `json:"fallback_runner,omitempty"`
+	FallbackUsed     bool      `json:"fallback_used"`
+	Warnings         []string  `json:"warnings,omitempty"`
+	Error            string    `json:"error,omitempty"`
+	AttachmentCount  int       `json:"attachment_count"`
+	ImageCount       int       `json:"image_count"`
+	DurationMS       int64     `json:"duration_ms"`
+	CompletedAt      time.Time `json:"completed_at"`
 }
 
 func NewServer(cfg config.Config, store *jobs.Store, runner Runner, logger *log.Logger) *Server {
@@ -198,6 +230,24 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		status := jobs.Status{JobID: job.ID, Status: "error", Mode: req.Mode, CreatedAt: now, Error: strings.Join(stagingWarnings, "; ")}
 		_ = s.store.WriteStatus(job, status)
+		s.sendOutcome(r.Context(), outcomePayload{
+			Endpoint:         "/v2/projectego/decompose",
+			JobID:            job.ID,
+			Status:           "error",
+			ThreadID:         req.ThreadID,
+			SessionID:        session.ID,
+			CodexSessionID:   session.CodexSessionID,
+			SessionTurnCount: session.TurnCount,
+			SessionMaxTurns:  session.MaxTurns,
+			SessionRotated:   rotated,
+			PrimaryRunner:    s.cfg.RunnerBackend,
+			FallbackRunner:   s.cfg.RunnerFallback,
+			Warnings:         warnings,
+			Error:            "attachments could not be processed and no text fallback is available",
+			AttachmentCount:  len(req.Attachments),
+			ImageCount:       countImageRequests(req.Attachments),
+			DurationMS:       time.Since(now).Milliseconds(),
+		})
 		writeJSON(w, http.StatusBadRequest, decomposeResponse{
 			JobID: job.ID, Status: "error", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: "attachments could not be processed and no text fallback is available",
 		})
@@ -223,7 +273,8 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	message := buildV2Message(session.Summary, req, warnings)
-	if err := s.runV2(job.ID, job.Dir, &session, string(bootstrap), message, imagePaths, &warnings); err != nil {
+	outcome, err := s.runV2(job.ID, job.Dir, &session, string(bootstrap), message, imagePaths, &warnings)
+	if err != nil {
 		if s.cfg.SessionEnabled {
 			_ = s.sessions.MarkFailed(session.ID, err.Error(), time.Now().UTC())
 		}
@@ -231,6 +282,26 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 		status.Status = "error"
 		status.Error = err.Error()
 		_ = s.store.WriteStatus(job, status)
+		s.sendOutcome(r.Context(), outcomePayload{
+			Endpoint:         "/v2/projectego/decompose",
+			JobID:            job.ID,
+			Status:           "error",
+			ThreadID:         req.ThreadID,
+			SessionID:        session.ID,
+			CodexSessionID:   session.CodexSessionID,
+			SessionTurnCount: session.TurnCount,
+			SessionMaxTurns:  session.MaxTurns,
+			SessionRotated:   rotated,
+			Runner:           outcome.Runner,
+			PrimaryRunner:    outcome.PrimaryRunner,
+			FallbackRunner:   outcome.FallbackRunner,
+			FallbackUsed:     outcome.FallbackUsed,
+			Warnings:         warnings,
+			Error:            err.Error(),
+			AttachmentCount:  len(req.Attachments),
+			ImageCount:       countImageRequests(req.Attachments),
+			DurationMS:       time.Since(now).Milliseconds(),
+		})
 		writeJSON(w, http.StatusInternalServerError, decomposeResponse{
 			JobID: job.ID, Status: "error", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: err.Error(),
 		})
@@ -248,6 +319,26 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 		status.Status = "error"
 		status.Error = runErr.Error()
 		_ = s.store.WriteStatus(job, status)
+		s.sendOutcome(r.Context(), outcomePayload{
+			Endpoint:         "/v2/projectego/decompose",
+			JobID:            job.ID,
+			Status:           "error",
+			ThreadID:         req.ThreadID,
+			SessionID:        session.ID,
+			CodexSessionID:   session.CodexSessionID,
+			SessionTurnCount: session.TurnCount,
+			SessionMaxTurns:  session.MaxTurns,
+			SessionRotated:   rotated,
+			Runner:           outcome.Runner,
+			PrimaryRunner:    outcome.PrimaryRunner,
+			FallbackRunner:   outcome.FallbackRunner,
+			FallbackUsed:     outcome.FallbackUsed,
+			Warnings:         warnings,
+			Error:            runErr.Error(),
+			AttachmentCount:  len(req.Attachments),
+			ImageCount:       countImageRequests(req.Attachments),
+			DurationMS:       time.Since(now).Milliseconds(),
+		})
 		writeJSON(w, http.StatusInternalServerError, decomposeResponse{
 			JobID: job.ID, Status: "error", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: runErr.Error(),
 		})
@@ -262,6 +353,26 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 		status.Status = "error"
 		status.Error = err.Error()
 		_ = s.store.WriteStatus(job, status)
+		s.sendOutcome(r.Context(), outcomePayload{
+			Endpoint:         "/v2/projectego/decompose",
+			JobID:            job.ID,
+			Status:           "error",
+			ThreadID:         req.ThreadID,
+			SessionID:        session.ID,
+			CodexSessionID:   session.CodexSessionID,
+			SessionTurnCount: session.TurnCount,
+			SessionMaxTurns:  session.MaxTurns,
+			SessionRotated:   rotated,
+			Runner:           outcome.Runner,
+			PrimaryRunner:    outcome.PrimaryRunner,
+			FallbackRunner:   outcome.FallbackRunner,
+			FallbackUsed:     outcome.FallbackUsed,
+			Warnings:         warnings,
+			Error:            err.Error(),
+			AttachmentCount:  len(req.Attachments),
+			ImageCount:       countImageRequests(req.Attachments),
+			DurationMS:       time.Since(now).Milliseconds(),
+		})
 		writeJSON(w, http.StatusInternalServerError, decomposeResponse{
 			JobID: job.ID, Status: "error", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Warnings: warnings, Error: err.Error(),
 		})
@@ -271,6 +382,26 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.SessionEnabled {
 		session, _, err = s.sessions.RecordTurn(session.ID, req.Mode, req.Source, req.Text, resultBytes, attachmentMetadata, time.Now().UTC())
 		if err != nil {
+			s.sendOutcome(r.Context(), outcomePayload{
+				Endpoint:         "/v2/projectego/decompose",
+				JobID:            job.ID,
+				Status:           "error",
+				ThreadID:         req.ThreadID,
+				SessionID:        session.ID,
+				CodexSessionID:   session.CodexSessionID,
+				SessionTurnCount: session.TurnCount,
+				SessionMaxTurns:  session.MaxTurns,
+				SessionRotated:   rotated,
+				Runner:           outcome.Runner,
+				PrimaryRunner:    outcome.PrimaryRunner,
+				FallbackRunner:   outcome.FallbackRunner,
+				FallbackUsed:     outcome.FallbackUsed,
+				Warnings:         warnings,
+				Error:            err.Error(),
+				AttachmentCount:  len(req.Attachments),
+				ImageCount:       countImageRequests(req.Attachments),
+				DurationMS:       time.Since(now).Milliseconds(),
+			})
 			writeError(w, http.StatusInternalServerError, job.ID, err)
 			return
 		}
@@ -278,12 +409,36 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 	status.Status = "done"
 	status.ResultPath = resultPath
 	_ = s.store.WriteStatus(job, status)
+	s.sendOutcome(r.Context(), outcomePayload{
+		Endpoint:         "/v2/projectego/decompose",
+		JobID:            job.ID,
+		Status:           "done",
+		ThreadID:         req.ThreadID,
+		SessionID:        session.ID,
+		CodexSessionID:   session.CodexSessionID,
+		SessionTurnCount: session.TurnCount,
+		SessionMaxTurns:  session.MaxTurns,
+		SessionRotated:   rotated,
+		Runner:           outcome.Runner,
+		PrimaryRunner:    outcome.PrimaryRunner,
+		FallbackRunner:   outcome.FallbackRunner,
+		FallbackUsed:     outcome.FallbackUsed,
+		Warnings:         warnings,
+		AttachmentCount:  len(req.Attachments),
+		ImageCount:       countImageRequests(req.Attachments),
+		DurationMS:       time.Since(now).Milliseconds(),
+	})
 	writeJSON(w, http.StatusOK, decomposeResponse{
 		JobID: job.ID, Status: "done", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Result: result, Warnings: warnings,
 	})
 }
 
-func (s *Server) runV2(jobID, jobDir string, session *sessions.Session, bootstrap, message string, imagePaths []string, warnings *[]string) error {
+func (s *Server) runV2(jobID, jobDir string, session *sessions.Session, bootstrap, message string, imagePaths []string, warnings *[]string) (runOutcome, error) {
+	outcome := runOutcome{
+		Runner:         s.cfg.RunnerBackend,
+		PrimaryRunner:  s.cfg.RunnerBackend,
+		FallbackRunner: s.cfg.RunnerFallback,
+	}
 	if s.cfg.RunnerBackend == "appserver" {
 		threadID := ""
 		if strings.TrimPrefix(session.CodexSessionID, "fallback-") == session.CodexSessionID && session.CodexSessionID != "fallback-stateless" {
@@ -295,21 +450,23 @@ func (s *Server) runV2(jobID, jobDir string, session *sessions.Session, bootstra
 			if s.cfg.SessionEnabled {
 				updated, updateErr := s.sessions.SetCodexSessionID(session.ID, result.ThreadID, time.Now().UTC())
 				if updateErr != nil {
-					return updateErr
+					return outcome, updateErr
 				}
 				*session = updated
 			}
-			return nil
+			return outcome, nil
 		}
 		*warnings = append(*warnings, "codex_appserver_unavailable")
 		s.logger.Printf("v2 app-server runner failed job_id=%s error=%v", jobID, err)
 		if s.cfg.RunnerFallback == "off" {
-			return err
+			return outcome, err
 		}
+		outcome.Runner = "exec"
+		outcome.FallbackUsed = true
 	}
 	prompt := buildV2FallbackPrompt(bootstrap, message)
 	*warnings = append(*warnings, "codex_session_resume_unavailable")
-	return s.runner.RunPrompt(jobID, jobDir, prompt, imagePaths)
+	return outcome, s.runner.RunPrompt(jobID, jobDir, prompt, imagePaths)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -326,6 +483,7 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(w, r) {
 		return
 	}
+	startedAt := time.Now().UTC()
 
 	var req jobs.Request
 	reader := http.MaxBytesReader(w, r.Body, maxInputBytes+64*1024)
@@ -371,6 +529,17 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 			Error:     err.Error(),
 		}
 		_ = s.store.WriteStatus(job, status)
+		s.sendOutcome(r.Context(), outcomePayload{
+			Endpoint:        "/v1/projectego/process",
+			JobID:           job.ID,
+			Status:          "error",
+			Runner:          "exec",
+			PrimaryRunner:   "exec",
+			Error:           err.Error(),
+			AttachmentCount: len(req.Attachments),
+			ImageCount:      countImageRequests(req.Attachments),
+			DurationMS:      time.Since(startedAt).Milliseconds(),
+		})
 		writeRunError(w, job, err)
 		return
 	}
@@ -397,6 +566,17 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 		status.Status = "error"
 		status.Error = err.Error()
 		_ = s.store.WriteStatus(job, status)
+		s.sendOutcome(r.Context(), outcomePayload{
+			Endpoint:        "/v1/projectego/process",
+			JobID:           job.ID,
+			Status:          "error",
+			Runner:          "exec",
+			PrimaryRunner:   "exec",
+			Error:           err.Error(),
+			AttachmentCount: len(req.Attachments),
+			ImageCount:      countImageRequests(req.Attachments),
+			DurationMS:      time.Since(startedAt).Milliseconds(),
+		})
 		writeRunError(w, job, err)
 		return
 	}
@@ -409,6 +589,17 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 		status.Status = "error"
 		status.Error = runErr.Error()
 		_ = s.store.WriteStatus(job, status)
+		s.sendOutcome(r.Context(), outcomePayload{
+			Endpoint:        "/v1/projectego/process",
+			JobID:           job.ID,
+			Status:          "error",
+			Runner:          "exec",
+			PrimaryRunner:   "exec",
+			Error:           runErr.Error(),
+			AttachmentCount: len(req.Attachments),
+			ImageCount:      countImageRequests(req.Attachments),
+			DurationMS:      time.Since(startedAt).Milliseconds(),
+		})
 		writeRunError(w, job, runErr)
 		return
 	}
@@ -417,6 +608,17 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 		status.Status = "error"
 		status.Error = runErr.Error()
 		_ = s.store.WriteStatus(job, status)
+		s.sendOutcome(r.Context(), outcomePayload{
+			Endpoint:        "/v1/projectego/process",
+			JobID:           job.ID,
+			Status:          "error",
+			Runner:          "exec",
+			PrimaryRunner:   "exec",
+			Error:           runErr.Error(),
+			AttachmentCount: len(req.Attachments),
+			ImageCount:      countImageRequests(req.Attachments),
+			DurationMS:      time.Since(startedAt).Milliseconds(),
+		})
 		writeRunError(w, job, runErr)
 		return
 	}
@@ -427,6 +629,17 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 	_ = s.store.WriteStatus(job, status)
 
 	s.logger.Printf("job done job_id=%s warnings=%d", job.ID, len(warnings))
+	s.sendOutcome(r.Context(), outcomePayload{
+		Endpoint:        "/v1/projectego/process",
+		JobID:           job.ID,
+		Status:          "done",
+		Runner:          "exec",
+		PrimaryRunner:   "exec",
+		Warnings:        warnings,
+		AttachmentCount: len(req.Attachments),
+		ImageCount:      countImageRequests(req.Attachments),
+		DurationMS:      time.Since(startedAt).Milliseconds(),
+	})
 	writeJSON(w, http.StatusOK, processResponse{
 		JobID:    job.ID,
 		Status:   "done",
@@ -665,6 +878,55 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func (s *Server) sendOutcome(ctx context.Context, payload outcomePayload) {
+	if s.cfg.OutcomeWebhookURL == "" {
+		return
+	}
+	payload.Event = "codex_agent_outcome"
+	payload.Version = 1
+	payload.CompletedAt = time.Now().UTC()
+	body, err := json.Marshal(payload)
+	if err != nil {
+		s.logger.Printf("outcome webhook marshal failed job_id=%s error=%v", payload.JobID, err)
+		return
+	}
+	timeout := s.cfg.OutcomeWebhookTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.OutcomeWebhookURL, bytes.NewReader(body))
+	if err != nil {
+		s.logger.Printf("outcome webhook request failed job_id=%s error=%v", payload.JobID, err)
+		return
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Codex-Agent-Event", "outcome")
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		s.logger.Printf("outcome webhook post failed job_id=%s error=%v", payload.JobID, err)
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		s.logger.Printf("outcome webhook returned non-2xx job_id=%s status=%s", payload.JobID, response.Status)
+		return
+	}
+	s.logger.Printf("outcome webhook delivered job_id=%s status=%s runner=%s fallback_used=%t", payload.JobID, payload.Status, payload.Runner, payload.FallbackUsed)
+}
+
+func countImageRequests(requests []jobs.AttachmentRequest) int {
+	total := 0
+	for _, request := range requests {
+		if request.Kind == "image" {
+			total++
+		}
+	}
+	return total
 }
 
 func preserveStagingEvents(path string, stagingEvents []byte) {

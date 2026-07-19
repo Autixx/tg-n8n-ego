@@ -147,6 +147,8 @@ CODEX_AGENT_SESSION_STORE_PATH=/opt/codex-agent/codex-sessions.json
 CODEX_AGENT_RUNNER=exec
 CODEX_AGENT_RUNNER_FALLBACK=exec
 CODEX_AGENT_APP_SERVER_URL=unix:///opt/codex-agent/codex-app-server.sock
+CODEX_AGENT_OUTCOME_WEBHOOK_URL=
+CODEX_AGENT_OUTCOME_WEBHOOK_TIMEOUT_SECONDS=10
 ```
 
 `CODEX_AGENT_MULTIMODAL_MODE` accepts `auto`, `enabled`, or `disabled`. Both `auto` and `enabled` verify that the installed `codex exec` exposes `--image`; attachment requests fail explicitly when the capability is unavailable. Text-only requests do not perform this capability check.
@@ -166,6 +168,8 @@ The v2 endpoint decomposes ProjectEGO work items with `domain_hint` and `module_
 V2 keeps short-lived session metadata in `/opt/codex-agent/codex-sessions.json`. With the default `CODEX_AGENT_RUNNER=exec`, the service uses the stable fallback path: it stores turn history and summaries, sends bootstrap + latest summary + current compact request, and returns the warning `codex_session_resume_unavailable`.
 
 Set `CODEX_AGENT_RUNNER=appserver` to use Codex App Server threads for v2. In this mode the agent connects to the long-running `codex-app-server.service` through `codex app-server proxy`, creates or resumes a persisted Codex thread, sends the bootstrap prompt only when the Codex thread is created, and sends compact per-message input on later turns. If app-server fails and `CODEX_AGENT_RUNNER_FALLBACK=exec`, v2 returns `codex_appserver_unavailable` and falls back to `codex exec`.
+
+`CODEX_AGENT_SESSION_MAX_TURNS` controls how many successful v2 turns are stored in one ProjectEGO session before rotation. When the current session reaches the limit, the agent closes it, saves a compact summary, creates a new session for the same `thread_id`, and sends that summary with the next request. This is the main knob for forcing a fresh Codex App Server thread after a fixed number of messages.
 
 Before enabling app-server mode, verify Codex CLI support and auth as the service user:
 
@@ -189,7 +193,10 @@ Set these values in `/etc/codex-agent/codex-agent.env`:
 CODEX_AGENT_RUNNER=appserver
 CODEX_AGENT_RUNNER_FALLBACK=exec
 CODEX_AGENT_APP_SERVER_URL=unix:///opt/codex-agent/codex-app-server.sock
+CODEX_AGENT_SESSION_MAX_TURNS=10
 ```
+
+Set `CODEX_AGENT_OUTCOME_WEBHOOK_URL` to receive best-effort POST notifications for accepted v1/v2 jobs. Webhook delivery failures are logged but do not change the normal API response. The payload includes `status`, `endpoint`, `job_id`, session/thread IDs when available, `runner`, `primary_runner`, `fallback_runner`, `fallback_used`, warnings/error, attachment counts, and duration. Use this to see app-server failures and exec fallback events outside the HTTP response path.
 
 Set `CODEX_AGENT_SESSION_ENABLED=false` to run v2 without writing session state. The API response remains stable and includes `session_manager_disabled`.
 

@@ -18,6 +18,8 @@ func TestAttachmentDefaults(t *testing.T) {
 	t.Setenv("CODEX_AGENT_RUNNER", "")
 	t.Setenv("CODEX_AGENT_RUNNER_FALLBACK", "")
 	t.Setenv("CODEX_AGENT_APP_SERVER_URL", "")
+	t.Setenv("CODEX_AGENT_OUTCOME_WEBHOOK_URL", "")
+	t.Setenv("CODEX_AGENT_OUTCOME_WEBHOOK_TIMEOUT_SECONDS", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -50,6 +52,9 @@ func TestAttachmentDefaults(t *testing.T) {
 	if cfg.AppServerSocketPath != "/opt/codex-agent/codex-app-server.sock" {
 		t.Fatalf("AppServerSocketPath = %q", cfg.AppServerSocketPath)
 	}
+	if cfg.OutcomeWebhookTimeout != 10*time.Second {
+		t.Fatalf("OutcomeWebhookTimeout = %s", cfg.OutcomeWebhookTimeout)
+	}
 }
 
 func TestInvalidMultimodalMode(t *testing.T) {
@@ -71,6 +76,30 @@ func TestInvalidRunnerMode(t *testing.T) {
 func TestInvalidAppServerURL(t *testing.T) {
 	t.Setenv("CODEX_AGENT_TOKEN", "agent-token")
 	t.Setenv("CODEX_AGENT_APP_SERVER_URL", "ws://127.0.0.1:4500")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() unexpectedly succeeded")
+	}
+}
+
+func TestOutcomeWebhookConfig(t *testing.T) {
+	t.Setenv("CODEX_AGENT_TOKEN", "agent-token")
+	t.Setenv("CODEX_AGENT_OUTCOME_WEBHOOK_URL", "http://127.0.0.1:19100/outcome")
+	t.Setenv("CODEX_AGENT_OUTCOME_WEBHOOK_TIMEOUT_SECONDS", "3")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OutcomeWebhookURL != "http://127.0.0.1:19100/outcome" {
+		t.Fatalf("OutcomeWebhookURL = %q", cfg.OutcomeWebhookURL)
+	}
+	if cfg.OutcomeWebhookTimeout != 3*time.Second {
+		t.Fatalf("OutcomeWebhookTimeout = %s", cfg.OutcomeWebhookTimeout)
+	}
+}
+
+func TestInvalidOutcomeWebhookURL(t *testing.T) {
+	t.Setenv("CODEX_AGENT_TOKEN", "agent-token")
+	t.Setenv("CODEX_AGENT_OUTCOME_WEBHOOK_URL", "ftp://127.0.0.1/outcome")
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() unexpectedly succeeded")
 	}

@@ -31,6 +31,7 @@ const (
 	defaultRunner         = "exec"
 	defaultRunnerFallback = "exec"
 	defaultAppServerURL   = "unix:///opt/codex-agent/codex-app-server.sock"
+	defaultWebhookTimeout = 10
 )
 
 type Config struct {
@@ -58,11 +59,13 @@ type Config struct {
 	SessionPurpose   string
 	SessionStorePath string
 
-	RunnerBackend        string
-	RunnerFallback       string
-	AppServerURL         string
-	AppServerSocketPath  string
-	AppServerTurnTimeout time.Duration
+	RunnerBackend         string
+	RunnerFallback        string
+	AppServerURL          string
+	AppServerSocketPath   string
+	AppServerTurnTimeout  time.Duration
+	OutcomeWebhookURL     string
+	OutcomeWebhookTimeout time.Duration
 }
 
 func Load() (Config, error) {
@@ -123,6 +126,13 @@ func Load() (Config, error) {
 	if sessionAgeMinutes <= 0 {
 		return Config{}, errors.New("CODEX_AGENT_SESSION_MAX_AGE_MINUTES must be positive")
 	}
+	webhookTimeoutSeconds, err := intEnv("CODEX_AGENT_OUTCOME_WEBHOOK_TIMEOUT_SECONDS", defaultWebhookTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+	if webhookTimeoutSeconds <= 0 {
+		return Config{}, errors.New("CODEX_AGENT_OUTCOME_WEBHOOK_TIMEOUT_SECONDS must be positive")
+	}
 	workdir := stringEnv("CODEX_AGENT_WORKDIR", defaultWorkdir)
 
 	cfg := Config{
@@ -152,6 +162,8 @@ func Load() (Config, error) {
 		RunnerFallback:           strings.ToLower(stringEnv("CODEX_AGENT_RUNNER_FALLBACK", defaultRunnerFallback)),
 		AppServerURL:             stringEnv("CODEX_AGENT_APP_SERVER_URL", defaultAppServerURL),
 		AppServerTurnTimeout:     time.Duration(timeoutSeconds) * time.Second,
+		OutcomeWebhookURL:        strings.TrimSpace(os.Getenv("CODEX_AGENT_OUTCOME_WEBHOOK_URL")),
+		OutcomeWebhookTimeout:    time.Duration(webhookTimeoutSeconds) * time.Second,
 	}
 	cfg.AppServerSocketPath, err = parseAppServerSocketPath(cfg.AppServerURL)
 	if err != nil {
@@ -172,6 +184,9 @@ func Load() (Config, error) {
 	}
 	if !IsAllowedRunnerFallback(cfg.RunnerFallback) {
 		return Config{}, fmt.Errorf("CODEX_AGENT_RUNNER_FALLBACK is not allowed: %s", cfg.RunnerFallback)
+	}
+	if err := validateOutcomeWebhookURL(cfg.OutcomeWebhookURL); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }
@@ -269,4 +284,14 @@ func parseAppServerSocketPath(rawURL string) (string, error) {
 		return "", errors.New("CODEX_AGENT_APP_SERVER_URL unix socket path is required")
 	}
 	return path, nil
+}
+
+func validateOutcomeWebhookURL(rawURL string) error {
+	if rawURL == "" {
+		return nil
+	}
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return errors.New("CODEX_AGENT_OUTCOME_WEBHOOK_URL must start with http:// or https://")
+	}
+	return nil
 }

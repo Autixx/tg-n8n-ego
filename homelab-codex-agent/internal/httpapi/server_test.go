@@ -27,6 +27,7 @@ type fakeRunner struct {
 	prompt       string
 	appMessage   string
 	appThreadID  string
+	appCalls     int
 	result       string
 }
 
@@ -48,6 +49,7 @@ func (r *fakeRunner) RunPrompt(_ string, jobDir, prompt string, imagePaths []str
 }
 
 func (r *fakeRunner) RunAppServer(_ string, jobDir, threadID, _ string, message string, imagePaths []string) (codex.AppServerResult, error) {
+	r.appCalls++
 	r.appMessage = message
 	r.imageCount = len(imagePaths)
 	if r.appServerErr != nil {
@@ -405,6 +407,85 @@ func TestV2AppServerFallsBackToExec(t *testing.T) {
 	}
 }
 
+func TestV2OutcomeWebhookReportsFallback(t *testing.T) {
+	t.Parallel()
+	var payload outcomePayload
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer webhook.Close()
+
+	runner := &fakeRunner{appServerErr: errors.New("app server down")}
+	cfg, server := newV2TestServer(t, runner)
+	cfg.RunnerBackend = "appserver"
+	cfg.RunnerFallback = "exec"
+	cfg.OutcomeWebhookURL = webhook.URL
+	server.cfg = cfg
+
+	response := performDecomposeRequest(t, server.Routes(), cfg.Token, `{
+		"thread_id":"projectego-intake","mode":"structured_breakdown","source":"test","text":"input"
+	}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if payload.Event != "codex_agent_outcome" || payload.Status != "done" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if payload.Runner != "exec" || payload.PrimaryRunner != "appserver" || !payload.FallbackUsed {
+		t.Fatalf("runner outcome = %#v", payload)
+	}
+	if !contains(payload.Warnings, "codex_appserver_unavailable") {
+		t.Fatalf("warnings = %#v", payload.Warnings)
+	}
+}
+
+func TestV2SessionMaxTurnsRotatesAppServerThread(t *testing.T) {
+	t.Parallel()
+	runner := &fakeRunner{}
+	cfg, server := newV2TestServer(t, runner)
+	cfg.RunnerBackend = "appserver"
+	cfg.RunnerFallback = "off"
+	cfg.SessionMaxTurns = 1
+	server.cfg = cfg
+
+	first := performDecomposeRequest(t, server.Routes(), cfg.Token, `{
+		"thread_id":"projectego-intake","mode":"structured_breakdown","source":"test","text":"first"
+	}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d, body = %s", first.Code, first.Body.String())
+	}
+	var firstPayload decomposeResponse
+	if err := json.Unmarshal(first.Body.Bytes(), &firstPayload); err != nil {
+		t.Fatal(err)
+	}
+
+	second := performDecomposeRequest(t, server.Routes(), cfg.Token, `{
+		"thread_id":"projectego-intake","mode":"structured_breakdown","source":"test","text":"second"
+	}`)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, body = %s", second.Code, second.Body.String())
+	}
+	var secondPayload decomposeResponse
+	if err := json.Unmarshal(second.Body.Bytes(), &secondPayload); err != nil {
+		t.Fatal(err)
+	}
+	if !secondPayload.Session.Rotated {
+		t.Fatalf("session was not marked rotated: %#v", secondPayload.Session)
+	}
+	if secondPayload.Session.ID == firstPayload.Session.ID {
+		t.Fatalf("session id was reused after max turns: %q", secondPayload.Session.ID)
+	}
+	if runner.appCalls != 2 {
+		t.Fatalf("app calls = %d", runner.appCalls)
+	}
+}
+
 func testConfig(workdir string) config.Config {
 	return config.Config{
 		Listen:                   "127.0.0.1:19090",
@@ -425,6 +506,9 @@ func testConfig(workdir string) config.Config {
 		SessionMaxAge:            time.Hour,
 		SessionPurpose:           "projectego-decompose",
 		SessionStorePath:         filepath.Join(workdir, "codex-sessions.json"),
+		RunnerBackend:            "exec",
+		RunnerFallback:           "exec",
+		OutcomeWebhookTimeout:    time.Second,
 	}
 }
 
