@@ -268,6 +268,16 @@ run_doctor() {
       doctor_fail 'codex exec --image support could not be verified'
     fi
 
+    if appserver_help="$(run_as_service /usr/local/bin/codex app-server --help 2>&1)"; then
+      if grep -q -- 'thread/start\|Manage the local app-server daemon\|app server' <<<"${appserver_help}"; then
+        doctor_ok 'codex app-server support'
+      else
+        doctor_fail 'codex app-server help did not show expected app-server text'
+      fi
+    else
+      doctor_fail "codex app-server --help failed: ${appserver_help}"
+    fi
+
     printf '\nDoctor result: '
     if [[ "${failures}" -eq 0 ]]; then
       printf 'OK\n'

@@ -29,6 +29,7 @@ const maxInputBytes = 256 * 1024
 type Runner interface {
 	Run(jobID, jobDir string, imagePaths []string) error
 	RunPrompt(jobID, jobDir, prompt string, imagePaths []string) error
+	RunAppServer(jobID, jobDir, threadID, bootstrap, message string, imagePaths []string) (codex.AppServerResult, error)
 }
 
 type AttachmentStager interface {
@@ -149,7 +150,7 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	warnings := []string{"codex_session_resume_unavailable"}
+	warnings := []string{}
 	if !s.cfg.SessionEnabled {
 		warnings = append(warnings, "session_manager_disabled")
 	}
@@ -221,8 +222,8 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 			LocalPath:    attachment.RelativePath,
 		})
 	}
-	prompt := buildV2Prompt(string(bootstrap), session.Summary, req, warnings)
-	if err := s.runner.RunPrompt(job.ID, job.Dir, prompt, imagePaths); err != nil {
+	message := buildV2Message(session.Summary, req, warnings)
+	if err := s.runV2(job.ID, job.Dir, &session, string(bootstrap), message, imagePaths, &warnings); err != nil {
 		if s.cfg.SessionEnabled {
 			_ = s.sessions.MarkFailed(session.ID, err.Error(), time.Now().UTC())
 		}
@@ -280,6 +281,35 @@ func (s *Server) handleDecompose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, decomposeResponse{
 		JobID: job.ID, Status: "done", ThreadID: req.ThreadID, Session: makeSessionResponse(session, rotated), Result: result, Warnings: warnings,
 	})
+}
+
+func (s *Server) runV2(jobID, jobDir string, session *sessions.Session, bootstrap, message string, imagePaths []string, warnings *[]string) error {
+	if s.cfg.RunnerBackend == "appserver" {
+		threadID := ""
+		if strings.TrimPrefix(session.CodexSessionID, "fallback-") == session.CodexSessionID && session.CodexSessionID != "fallback-stateless" {
+			threadID = session.CodexSessionID
+		}
+		result, err := s.runner.RunAppServer(jobID, jobDir, threadID, bootstrap, message, imagePaths)
+		if err == nil {
+			session.CodexSessionID = result.ThreadID
+			if s.cfg.SessionEnabled {
+				updated, updateErr := s.sessions.SetCodexSessionID(session.ID, result.ThreadID, time.Now().UTC())
+				if updateErr != nil {
+					return updateErr
+				}
+				*session = updated
+			}
+			return nil
+		}
+		*warnings = append(*warnings, "codex_appserver_unavailable")
+		s.logger.Printf("v2 app-server runner failed job_id=%s error=%v", jobID, err)
+		if s.cfg.RunnerFallback == "off" {
+			return err
+		}
+	}
+	prompt := buildV2FallbackPrompt(bootstrap, message)
+	*warnings = append(*warnings, "codex_session_resume_unavailable")
+	return s.runner.RunPrompt(jobID, jobDir, prompt, imagePaths)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -465,7 +495,7 @@ func makeSessionResponse(session sessions.Session, rotated bool) sessionResponse
 	}
 }
 
-func buildV2Prompt(bootstrap, summary string, req decomposeRequest, warnings []string) string {
+func buildV2Message(summary string, req decomposeRequest, warnings []string) string {
 	type safeAttachment struct {
 		ID        string `json:"id"`
 		Kind      string `json:"kind"`
@@ -497,16 +527,23 @@ func buildV2Prompt(bootstrap, summary string, req decomposeRequest, warnings []s
 		Warnings:    warnings,
 	}
 	messageJSON, _ := json.MarshalIndent(message, "", "  ")
-	return fmt.Sprintf(`%s
-
-Session resume is unavailable in this runner. Use this compact session summary as context, but do not invent details:
+	return fmt.Sprintf(`Session summary:
 %s
 
 Current request:
 %s
 
 Create result.json in the current directory using the v2 output schema. Preserve existing eventlog.jsonl entries and append a short JSONL log of your actions.
-`, bootstrap, summary, string(messageJSON))
+`, summary, string(messageJSON))
+}
+
+func buildV2FallbackPrompt(bootstrap, message string) string {
+	return fmt.Sprintf(`%s
+
+Session resume is unavailable in this runner. Use the compact session summary inside the current request as context, but do not invent details.
+
+%s
+`, bootstrap, message)
 }
 
 func (s *Server) handleJobStatus(w http.ResponseWriter, r *http.Request) {

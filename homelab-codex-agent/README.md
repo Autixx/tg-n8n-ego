@@ -144,6 +144,8 @@ CODEX_AGENT_SESSION_MAX_TURNS=10
 CODEX_AGENT_SESSION_MAX_AGE_MINUTES=360
 CODEX_AGENT_SESSION_PURPOSE=projectego-decompose
 CODEX_AGENT_SESSION_STORE_PATH=/opt/codex-agent/codex-sessions.json
+CODEX_AGENT_RUNNER=exec
+CODEX_AGENT_RUNNER_FALLBACK=exec
 ```
 
 `CODEX_AGENT_MULTIMODAL_MODE` accepts `auto`, `enabled`, or `disabled`. Both `auto` and `enabled` verify that the installed `codex exec` exposes `--image`; attachment requests fail explicitly when the capability is unavailable. Text-only requests do not perform this capability check.
@@ -160,7 +162,16 @@ curl -sS http://127.0.0.1:19090/healthz | jq .
 
 The v2 endpoint decomposes ProjectEGO work items with `domain_hint` and `module_hint`. It does not emit Plane projects, PM board names, PM UUIDs, or n8n routing decisions.
 
-V2 keeps short-lived session metadata in `/opt/codex-agent/codex-sessions.json`. The current runner uses the stable fallback path: it stores turn history and summaries, sends bootstrap + latest summary + current compact request, and returns the warning `codex_session_resume_unavailable`. Real Codex resume can be added behind the same runner interface later without changing the v2 API.
+V2 keeps short-lived session metadata in `/opt/codex-agent/codex-sessions.json`. With the default `CODEX_AGENT_RUNNER=exec`, the service uses the stable fallback path: it stores turn history and summaries, sends bootstrap + latest summary + current compact request, and returns the warning `codex_session_resume_unavailable`.
+
+Set `CODEX_AGENT_RUNNER=appserver` to use Codex App Server threads for v2. In this mode the agent starts a local stdio app-server child process for the request, creates or resumes a persisted Codex thread, sends the bootstrap prompt only when the Codex thread is created, and sends compact per-message input on later turns. If app-server fails and `CODEX_AGENT_RUNNER_FALLBACK=exec`, v2 returns `codex_appserver_unavailable` and falls back to `codex exec`.
+
+Before enabling app-server mode, verify Codex CLI support and auth as the service user:
+
+```bash
+sudo -u codexagent HOME=/opt/codex-agent /usr/local/bin/codex app-server --help
+sudo -u codexagent HOME=/opt/codex-agent /usr/local/bin/codex login status
+```
 
 Set `CODEX_AGENT_SESSION_ENABLED=false` to run v2 without writing session state. The API response remains stable and includes `session_manager_disabled`.
 

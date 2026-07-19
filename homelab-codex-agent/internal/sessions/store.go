@@ -183,6 +183,28 @@ func (s *Store) RecordTurn(sessionID, mode, source, inputText string, result jso
 	return *session, message, nil
 }
 
+func (s *Store) SetCodexSessionID(sessionID, codexSessionID string, now time.Time) (Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	doc, err := s.readLocked()
+	if err != nil {
+		return Session{}, err
+	}
+	for index := range doc.Sessions {
+		if doc.Sessions[index].ID == sessionID {
+			doc.Sessions[index].CodexSessionID = codexSessionID
+			doc.Sessions[index].UpdatedAt = now
+			doc.Sessions[index].LastUsedAt = now
+			if err := s.writeLocked(doc); err != nil {
+				return Session{}, err
+			}
+			return doc.Sessions[index], nil
+		}
+	}
+	return Session{}, errors.New("session not found")
+}
+
 func (s *Store) MarkFailed(sessionID, message string, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

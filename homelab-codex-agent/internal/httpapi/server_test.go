@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,10 +21,13 @@ import (
 )
 
 type fakeRunner struct {
-	unsupported bool
-	imageCount  int
-	prompt      string
-	result      string
+	unsupported  bool
+	appServerErr error
+	imageCount   int
+	prompt       string
+	appMessage   string
+	appThreadID  string
+	result       string
 }
 
 func (r *fakeRunner) Run(_ string, jobDir string, imagePaths []string) error {
@@ -41,6 +45,19 @@ func (r *fakeRunner) RunPrompt(_ string, jobDir, prompt string, imagePaths []str
 		result = `{"mode":"structured_breakdown","source_summary":"ok","items":[],"needs_clarification":[],"eventlog_summary":"ok"}`
 	}
 	return os.WriteFile(filepath.Join(jobDir, "result.json"), []byte(result), 0o600)
+}
+
+func (r *fakeRunner) RunAppServer(_ string, jobDir, threadID, _ string, message string, imagePaths []string) (codex.AppServerResult, error) {
+	r.appMessage = message
+	r.imageCount = len(imagePaths)
+	if r.appServerErr != nil {
+		return codex.AppServerResult{}, r.appServerErr
+	}
+	if threadID == "" {
+		threadID = "thr_test"
+	}
+	r.appThreadID = threadID
+	return codex.AppServerResult{ThreadID: threadID, UsedResume: true}, r.RunPrompt("", jobDir, "", imagePaths)
 }
 
 func TestTextOnlyRequestStillWorks(t *testing.T) {
@@ -322,6 +339,69 @@ func TestV2DoesNotStoreAttachmentSecretsOrRawBytes(t *testing.T) {
 		if bytes.Contains(storeData, []byte(forbidden)) {
 			t.Fatalf("session store leaked %q: %s", forbidden, storeData)
 		}
+	}
+}
+
+func TestV2AppServerStoresAndResumesThread(t *testing.T) {
+	t.Parallel()
+	runner := &fakeRunner{}
+	cfg, server := newV2TestServer(t, runner)
+	cfg.RunnerBackend = "appserver"
+	server.cfg = cfg
+
+	first := performDecomposeRequest(t, server.Routes(), cfg.Token, `{
+		"thread_id":"projectego-intake","mode":"structured_breakdown","source":"test","text":"first"
+	}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d, body = %s", first.Code, first.Body.String())
+	}
+	var firstPayload decomposeResponse
+	if err := json.Unmarshal(first.Body.Bytes(), &firstPayload); err != nil {
+		t.Fatal(err)
+	}
+	if firstPayload.Session.CodexSessionID != "thr_test" {
+		t.Fatalf("codex session id = %q", firstPayload.Session.CodexSessionID)
+	}
+	if contains(firstPayload.Warnings, "codex_session_resume_unavailable") {
+		t.Fatalf("unexpected resume fallback warning: %#v", firstPayload.Warnings)
+	}
+
+	second := performDecomposeRequest(t, server.Routes(), cfg.Token, `{
+		"thread_id":"projectego-intake","mode":"structured_breakdown","source":"test","text":"second"
+	}`)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, body = %s", second.Code, second.Body.String())
+	}
+	if runner.appThreadID != "thr_test" {
+		t.Fatalf("app server resumed thread = %q", runner.appThreadID)
+	}
+	if strings.Contains(runner.appMessage, "You are a structured work-item decomposer") {
+		t.Fatalf("app server resume message included bootstrap: %s", runner.appMessage)
+	}
+}
+
+func TestV2AppServerFallsBackToExec(t *testing.T) {
+	t.Parallel()
+	runner := &fakeRunner{appServerErr: errors.New("app server down")}
+	cfg, server := newV2TestServer(t, runner)
+	cfg.RunnerBackend = "appserver"
+	cfg.RunnerFallback = "exec"
+	server.cfg = cfg
+	response := performDecomposeRequest(t, server.Routes(), cfg.Token, `{
+		"thread_id":"projectego-intake","mode":"structured_breakdown","source":"test","text":"input"
+	}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var payload decomposeResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(payload.Warnings, "codex_appserver_unavailable") {
+		t.Fatalf("warnings = %#v", payload.Warnings)
+	}
+	if runner.prompt == "" {
+		t.Fatal("exec fallback prompt was not used")
 	}
 }
 

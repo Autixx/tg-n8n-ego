@@ -98,6 +98,16 @@ else
   fail "Codex exec --image support could not be verified"
 fi
 
+if appserver_help="$(run_as_service /usr/local/bin/codex app-server --help 2>&1)"; then
+  if grep -q -- 'thread/start\|Manage the local app-server daemon\|app server' <<<"${appserver_help}"; then
+    pass "Codex app-server is available"
+  else
+    warn "Codex app-server help ran but did not show expected app-server text"
+  fi
+else
+  warn "Codex app-server --help failed: ${appserver_help}"
+fi
+
 if [[ -x /usr/bin/bwrap ]]; then
   pass "bubblewrap is available at /usr/bin/bwrap"
 else

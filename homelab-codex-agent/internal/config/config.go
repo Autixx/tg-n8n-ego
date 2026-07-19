@@ -28,6 +28,8 @@ const (
 	defaultSessionTurns   = 10
 	defaultSessionAge     = 360
 	defaultSessionPurpose = "projectego-decompose"
+	defaultRunner         = "exec"
+	defaultRunnerFallback = "exec"
 )
 
 type Config struct {
@@ -54,6 +56,10 @@ type Config struct {
 	SessionMaxAge    time.Duration
 	SessionPurpose   string
 	SessionStorePath string
+
+	RunnerBackend        string
+	RunnerFallback       string
+	AppServerTurnTimeout time.Duration
 }
 
 func Load() (Config, error) {
@@ -139,6 +145,9 @@ func Load() (Config, error) {
 		SessionMaxAge:            time.Duration(sessionAgeMinutes) * time.Minute,
 		SessionPurpose:           stringEnv("CODEX_AGENT_SESSION_PURPOSE", defaultSessionPurpose),
 		SessionStorePath:         stringEnv("CODEX_AGENT_SESSION_STORE_PATH", filepath.Join(workdir, "codex-sessions.json")),
+		RunnerBackend:            strings.ToLower(stringEnv("CODEX_AGENT_RUNNER", defaultRunner)),
+		RunnerFallback:           strings.ToLower(stringEnv("CODEX_AGENT_RUNNER_FALLBACK", defaultRunnerFallback)),
+		AppServerTurnTimeout:     time.Duration(timeoutSeconds) * time.Second,
 	}
 
 	if cfg.Token == "" {
@@ -149,6 +158,12 @@ func Load() (Config, error) {
 	}
 	if !IsAllowedMultimodalMode(cfg.MultimodalMode) {
 		return Config{}, fmt.Errorf("CODEX_AGENT_MULTIMODAL_MODE is not allowed: %s", cfg.MultimodalMode)
+	}
+	if !IsAllowedRunner(cfg.RunnerBackend) {
+		return Config{}, fmt.Errorf("CODEX_AGENT_RUNNER is not allowed: %s", cfg.RunnerBackend)
+	}
+	if !IsAllowedRunnerFallback(cfg.RunnerFallback) {
+		return Config{}, fmt.Errorf("CODEX_AGENT_RUNNER_FALLBACK is not allowed: %s", cfg.RunnerFallback)
 	}
 	return cfg, nil
 }
@@ -209,6 +224,24 @@ func IsAllowedMode(mode string) bool {
 func IsAllowedMultimodalMode(mode string) bool {
 	switch mode {
 	case "auto", "enabled", "disabled":
+		return true
+	default:
+		return false
+	}
+}
+
+func IsAllowedRunner(runner string) bool {
+	switch runner {
+	case "exec", "appserver":
+		return true
+	default:
+		return false
+	}
+}
+
+func IsAllowedRunnerFallback(runner string) bool {
+	switch runner {
+	case "exec", "off":
 		return true
 	default:
 		return false
