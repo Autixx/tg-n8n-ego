@@ -51,6 +51,34 @@ func TestAppClientCallUsesMessageTransport(t *testing.T) {
 	}
 }
 
+func TestThreadStartUsesCodexSandboxVariant(t *testing.T) {
+	t.Parallel()
+	transport := &fakeAppTransport{
+		read: [][]byte{[]byte(`{"id":1,"result":{"thread":{"id":"thread-1"}}}`)},
+	}
+	client := &appClient{transport: transport, nextID: 1}
+
+	threadID, err := client.threadStart("/tmp/job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if threadID != "thread-1" {
+		t.Fatalf("threadID = %q, want thread-1", threadID)
+	}
+	var payload struct {
+		Method string `json:"method"`
+		Params struct {
+			Sandbox string `json:"sandbox"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(transport.written[0], &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Method != "thread/start" || payload.Params.Sandbox != "workspace-write" {
+		t.Fatalf("unexpected thread/start payload: %#v", payload)
+	}
+}
+
 type fakeAppTransport struct {
 	read    [][]byte
 	written [][]byte

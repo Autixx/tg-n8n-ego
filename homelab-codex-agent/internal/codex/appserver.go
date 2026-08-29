@@ -127,7 +127,7 @@ func (c *appClient) threadStart(jobDir string) (string, error) {
 	result, err := c.call("thread/start", map[string]any{
 		"cwd":            jobDir,
 		"approvalPolicy": "never",
-		"sandbox":        "workspaceWrite",
+		"sandbox":        "workspace-write",
 		"serviceName":    "homelab-codex-agent",
 	})
 	if err != nil {
