@@ -15,6 +15,7 @@ var (
 )
 
 type Result struct {
+	SchemaVersion        string   `json:"schema_version,omitempty"`
 	Mode                 string   `json:"mode"`
 	SourceSummary        string   `json:"source_summary"`
 	Items                []Item   `json:"items,omitempty"`

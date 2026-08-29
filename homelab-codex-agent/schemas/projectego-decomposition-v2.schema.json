@@ -5,6 +5,9 @@
   "additionalProperties": false,
   "required": ["mode", "source_summary", "needs_clarification", "eventlog_summary"],
   "properties": {
+    "schema_version": {
+      "type": "string"
+    },
     "mode": {
       "type": "string",
       "enum": ["abstract_idea", "structured_breakdown", "create_tasks", "advisor"]

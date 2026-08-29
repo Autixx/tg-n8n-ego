@@ -59,6 +59,7 @@ func TestParseAndValidateRejectsPlaneStyleResult(t *testing.T) {
 func TestParseAndValidateAcceptsAdvisorResult(t *testing.T) {
 	t.Parallel()
 	data := []byte(`{
+		"schema_version":"v2",
 		"mode":"advisor",
 		"source_summary":"User asks for UE5 planning advice.",
 		"answer_markdown":"## Pipeline\nStart with project goals, then prototype movement.",
