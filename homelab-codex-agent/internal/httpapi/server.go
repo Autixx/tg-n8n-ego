@@ -959,7 +959,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func (s *Server) sendOutcome(ctx context.Context, payload outcomePayload) {
+func (s *Server) sendOutcome(_ context.Context, payload outcomePayload) {
 	if s.cfg.OutcomeWebhookURL == "" {
 		return
 	}
@@ -975,7 +975,7 @@ func (s *Server) sendOutcome(ctx context.Context, payload outcomePayload) {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.OutcomeWebhookURL, bytes.NewReader(body))
 	if err != nil {

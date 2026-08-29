@@ -3,13 +3,19 @@ package codex
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type AppServerResult struct {
@@ -34,39 +40,13 @@ func (r *Runner) RunAppServer(jobID, jobDir, threadID, bootstrap, message string
 	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
 	defer cancel()
 
-	args := appServerArgs(r.appServerSocket)
-	cmd := exec.CommandContext(ctx, r.codexBin, args...)
-	cmd.Dir = jobDir
-	stdin, err := cmd.StdinPipe()
+	transport, err := r.openAppServerTransport(ctx, jobDir)
 	if err != nil {
-		return AppServerResult{}, fmt.Errorf("open app-server stdin: %w", err)
+		return AppServerResult{}, err
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return AppServerResult{}, fmt.Errorf("open app-server stdout: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return AppServerResult{}, fmt.Errorf("open app-server stderr: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return AppServerResult{}, fmt.Errorf("start codex app-server: %w", err)
-	}
-	go io.Copy(io.Discard, stderr)
-	defer func() {
-		_ = stdin.Close()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		_ = cmd.Wait()
-	}()
+	defer transport.Close()
 
-	client := &appClient{
-		stdin:   stdin,
-		scanner: bufio.NewScanner(stdout),
-		nextID:  1,
-	}
-	client.scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	client := &appClient{transport: transport, nextID: 1}
 	if err := client.initialize(); err != nil {
 		return AppServerResult{}, err
 	}
@@ -91,6 +71,32 @@ func (r *Runner) RunAppServer(jobID, jobDir, threadID, bootstrap, message string
 	return AppServerResult{ThreadID: threadID, UsedResume: usedResume}, nil
 }
 
+func (r *Runner) openAppServerTransport(ctx context.Context, jobDir string) (appTransport, error) {
+	if r.appServerSocket != "" {
+		return dialUnixWebSocket(ctx, r.appServerSocket)
+	}
+	args := appServerArgs("")
+	cmd := exec.CommandContext(ctx, r.codexBin, args...)
+	cmd.Dir = jobDir
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("open app-server stdin: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("open app-server stdout: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("open app-server stderr: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start codex app-server: %w", err)
+	}
+	go io.Copy(io.Discard, stderr)
+	return newJSONLTransport(stdin, stdout, cmd), nil
+}
+
 func appServerArgs(socketPath string) []string {
 	if socketPath != "" {
 		return []string{"app-server", "proxy", "--sock", socketPath}
@@ -99,9 +105,8 @@ func appServerArgs(socketPath string) []string {
 }
 
 type appClient struct {
-	stdin   io.Writer
-	scanner *bufio.Scanner
-	nextID  int
+	transport appTransport
+	nextID    int
 }
 
 func (c *appClient) initialize() error {
@@ -156,19 +161,22 @@ func (c *appClient) turnStartAndWait(threadID, text string, imagePaths []string)
 	}); err != nil {
 		return err
 	}
-	for c.scanner.Scan() {
+	for {
+		data, err := c.transport.ReadMessage()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return errors.New("app-server stream ended before turn/completed")
+			}
+			return fmt.Errorf("read app-server stream: %w", err)
+		}
 		var message appRPCMessage
-		if err := json.Unmarshal(c.scanner.Bytes(), &message); err != nil {
+		if err := json.Unmarshal(data, &message); err != nil {
 			continue
 		}
 		if message.Method == "turn/completed" {
 			return nil
 		}
 	}
-	if err := c.scanner.Err(); err != nil {
-		return fmt.Errorf("read app-server stream: %w", err)
-	}
-	return errors.New("app-server stream ended before turn/completed")
 }
 
 func (c *appClient) call(method string, params any) (json.RawMessage, error) {
@@ -177,9 +185,16 @@ func (c *appClient) call(method string, params any) (json.RawMessage, error) {
 	if err := c.send(map[string]any{"id": id, "method": method, "params": params}); err != nil {
 		return nil, err
 	}
-	for c.scanner.Scan() {
+	for {
+		data, err := c.transport.ReadMessage()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil, fmt.Errorf("app-server closed before response to %s", method)
+			}
+			return nil, fmt.Errorf("read app-server response: %w", err)
+		}
 		var message appRPCMessage
-		if err := json.Unmarshal(c.scanner.Bytes(), &message); err != nil {
+		if err := json.Unmarshal(data, &message); err != nil {
 			continue
 		}
 		if message.ID != id {
@@ -190,10 +205,6 @@ func (c *appClient) call(method string, params any) (json.RawMessage, error) {
 		}
 		return message.Result, nil
 	}
-	if err := c.scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read app-server response: %w", err)
-	}
-	return nil, fmt.Errorf("app-server closed before response to %s", method)
 }
 
 func (c *appClient) notify(method string, params any) error {
@@ -205,8 +216,202 @@ func (c *appClient) send(message any) error {
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
-	_, err = c.stdin.Write(data)
+	return c.transport.WriteMessage(data)
+}
+
+type appTransport interface {
+	ReadMessage() ([]byte, error)
+	WriteMessage([]byte) error
+	Close() error
+}
+
+type jsonlTransport struct {
+	stdin   io.WriteCloser
+	scanner *bufio.Scanner
+	cmd     *exec.Cmd
+}
+
+func newJSONLTransport(stdin io.WriteCloser, stdout io.Reader, cmd *exec.Cmd) *jsonlTransport {
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	return &jsonlTransport{stdin: stdin, scanner: scanner, cmd: cmd}
+}
+
+func (t *jsonlTransport) ReadMessage() ([]byte, error) {
+	if t.scanner.Scan() {
+		return append([]byte(nil), t.scanner.Bytes()...), nil
+	}
+	if err := t.scanner.Err(); err != nil {
+		return nil, err
+	}
+	return nil, io.EOF
+}
+
+func (t *jsonlTransport) WriteMessage(data []byte) error {
+	data = append(append([]byte(nil), data...), '\n')
+	_, err := t.stdin.Write(data)
+	return err
+}
+
+func (t *jsonlTransport) Close() error {
+	_ = t.stdin.Close()
+	if t.cmd.Process != nil {
+		_ = t.cmd.Process.Kill()
+	}
+	return t.cmd.Wait()
+}
+
+type wsUnixTransport struct {
+	conn net.Conn
+	r    *bufio.Reader
+}
+
+func dialUnixWebSocket(ctx context.Context, socketPath string) (*wsUnixTransport, error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("connect app-server socket: %w", err)
+	}
+	transport := &wsUnixTransport{conn: conn, r: bufio.NewReader(conn)}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	} else {
+		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	}
+	if err := transport.handshake(); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return transport, nil
+}
+
+func (t *wsUnixTransport) handshake() error {
+	keyBytes := make([]byte, 16)
+	if _, err := rand.Read(keyBytes); err != nil {
+		return fmt.Errorf("generate websocket key: %w", err)
+	}
+	key := base64.StdEncoding.EncodeToString(keyBytes)
+	request := strings.Join([]string{
+		"GET / HTTP/1.1",
+		"Host: localhost",
+		"Upgrade: websocket",
+		"Connection: Upgrade",
+		"Sec-WebSocket-Version: 13",
+		"Sec-WebSocket-Key: " + key,
+		"",
+		"",
+	}, "\r\n")
+	if _, err := io.WriteString(t.conn, request); err != nil {
+		return fmt.Errorf("write websocket handshake: %w", err)
+	}
+	response, err := http.ReadResponse(t.r, nil)
+	if err != nil {
+		return fmt.Errorf("read websocket handshake: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		return fmt.Errorf("websocket handshake failed: %s", response.Status)
+	}
+	return nil
+}
+
+func (t *wsUnixTransport) ReadMessage() ([]byte, error) {
+	for {
+		payload, opcode, err := t.readFrame()
+		if err != nil {
+			return nil, err
+		}
+		switch opcode {
+		case 0x1, 0x2:
+			return payload, nil
+		case 0x8:
+			return nil, io.EOF
+		case 0x9:
+			_ = t.writeFrame(0xA, payload)
+		}
+	}
+}
+
+func (t *wsUnixTransport) WriteMessage(data []byte) error {
+	return t.writeFrame(0x1, data)
+}
+
+func (t *wsUnixTransport) Close() error {
+	_ = t.writeFrame(0x8, nil)
+	return t.conn.Close()
+}
+
+func (t *wsUnixTransport) readFrame() ([]byte, byte, error) {
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(t.r, header); err != nil {
+		return nil, 0, err
+	}
+	opcode := header[0] & 0x0F
+	masked := header[1]&0x80 != 0
+	length := uint64(header[1] & 0x7F)
+	switch length {
+	case 126:
+		var extended [2]byte
+		if _, err := io.ReadFull(t.r, extended[:]); err != nil {
+			return nil, 0, err
+		}
+		length = uint64(binary.BigEndian.Uint16(extended[:]))
+	case 127:
+		var extended [8]byte
+		if _, err := io.ReadFull(t.r, extended[:]); err != nil {
+			return nil, 0, err
+		}
+		length = binary.BigEndian.Uint64(extended[:])
+	}
+	var mask [4]byte
+	if masked {
+		if _, err := io.ReadFull(t.r, mask[:]); err != nil {
+			return nil, 0, err
+		}
+	}
+	if length > 16*1024*1024 {
+		return nil, 0, fmt.Errorf("websocket frame too large: %d bytes", length)
+	}
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(t.r, payload); err != nil {
+		return nil, 0, err
+	}
+	if masked {
+		for i := range payload {
+			payload[i] ^= mask[i%4]
+		}
+	}
+	return payload, opcode, nil
+}
+
+func (t *wsUnixTransport) writeFrame(opcode byte, payload []byte) error {
+	var header []byte
+	header = append(header, 0x80|opcode)
+	length := len(payload)
+	switch {
+	case length < 126:
+		header = append(header, 0x80|byte(length))
+	case length <= 0xFFFF:
+		header = append(header, 0x80|126, byte(length>>8), byte(length))
+	default:
+		header = append(header, 0x80|127)
+		var extended [8]byte
+		binary.BigEndian.PutUint64(extended[:], uint64(length))
+		header = append(header, extended[:]...)
+	}
+	var mask [4]byte
+	if _, err := rand.Read(mask[:]); err != nil {
+		return fmt.Errorf("generate websocket mask: %w", err)
+	}
+	header = append(header, mask[:]...)
+	masked := append([]byte(nil), payload...)
+	for i := range masked {
+		masked[i] ^= mask[i%4]
+	}
+	if _, err := t.conn.Write(header); err != nil {
+		return err
+	}
+	_, err := t.conn.Write(masked)
 	return err
 }
 
