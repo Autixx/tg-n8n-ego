@@ -79,6 +79,37 @@ func TestThreadStartUsesCodexSandboxVariant(t *testing.T) {
 	}
 }
 
+func TestAppClientAnswersServerRequestsWhileWaiting(t *testing.T) {
+	t.Parallel()
+	transport := &fakeAppTransport{
+		read: [][]byte{
+			[]byte(`{"id":42,"method":"item/permissions/requestApproval","params":{"reason":"test"}}`),
+			[]byte(`{"id":1,"result":{"ok":true}}`),
+		},
+	}
+	client := &appClient{transport: transport, nextID: 1}
+
+	if _, err := client.call("thread/start", map[string]any{"cwd": "/tmp/job"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.written) != 2 {
+		t.Fatalf("written messages = %d, want 2", len(transport.written))
+	}
+	var response struct {
+		ID     int `json:"id"`
+		Result struct {
+			Scope       string         `json:"scope"`
+			Permissions map[string]any `json:"permissions"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(transport.written[1], &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ID != 42 || response.Result.Scope != "turn" || response.Result.Permissions == nil {
+		t.Fatalf("unexpected server request response: %#v", response)
+	}
+}
+
 type fakeAppTransport struct {
 	read    [][]byte
 	written [][]byte

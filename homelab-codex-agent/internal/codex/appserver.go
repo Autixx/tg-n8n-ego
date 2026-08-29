@@ -176,6 +176,11 @@ func (c *appClient) turnStartAndWait(threadID, text string, imagePaths []string)
 		if message.Method == "turn/completed" {
 			return nil
 		}
+		if message.Method != "" {
+			if err := c.handleServerMessage(message); err != nil {
+				return err
+			}
+		}
 	}
 }
 
@@ -197,6 +202,12 @@ func (c *appClient) call(method string, params any) (json.RawMessage, error) {
 		if err := json.Unmarshal(data, &message); err != nil {
 			continue
 		}
+		if message.Method != "" {
+			if err := c.handleServerMessage(message); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if message.ID != id {
 			continue
 		}
@@ -209,6 +220,37 @@ func (c *appClient) call(method string, params any) (json.RawMessage, error) {
 
 func (c *appClient) notify(method string, params any) error {
 	return c.send(map[string]any{"method": method, "params": params})
+}
+
+func (c *appClient) handleServerMessage(message appRPCMessage) error {
+	if message.ID == 0 {
+		return nil
+	}
+	result := map[string]any{}
+	switch message.Method {
+	case "item/permissions/requestApproval":
+		result = map[string]any{
+			"scope":       "turn",
+			"permissions": map[string]any{},
+		}
+	case "item/tool/call":
+		result = map[string]any{
+			"contentItems": []map[string]string{{
+				"type": "inputText",
+				"text": "homelab-codex-agent does not expose client-side dynamic tools.",
+			}},
+			"success": false,
+		}
+	case "request_user_input", "item/tool/requestUserInput":
+		result = map[string]any{
+			"contentItems": []map[string]string{{
+				"type": "inputText",
+				"text": "No interactive user input is available in homelab-codex-agent.",
+			}},
+			"success": false,
+		}
+	}
+	return c.send(map[string]any{"id": message.ID, "result": result})
 }
 
 func (c *appClient) send(message any) error {
