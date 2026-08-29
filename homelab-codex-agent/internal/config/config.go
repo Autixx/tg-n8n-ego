@@ -237,7 +237,7 @@ func boolEnv(name string, fallback bool) (bool, error) {
 
 func IsAllowedMode(mode string) bool {
 	switch mode {
-	case "abstract_idea", "structured_breakdown", "create_tasks":
+	case "abstract_idea", "structured_breakdown", "create_tasks", "advisor":
 		return true
 	default:
 		return false

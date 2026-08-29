@@ -57,6 +57,15 @@ create_tasks:
 - acceptance_criteria must be filled when possible.
 - include labels codex-generated, task-proposal, manual-review.
 
+advisor:
+- answer the user's question directly as a structured consultant.
+- do not atomize the request into backlog items.
+- use reasoning, ordered recommendations, tradeoffs, and clear next steps.
+- if the user asks for links or learning materials, include concise relevant references when you know them; say what should be verified if freshness matters.
+- keep the answer useful for manual task creation in Dashboard, but do not create tasks as the primary output.
+- return answer_markdown, key_points, suggested_next_actions, needs_clarification, and eventlog_summary.
+- items may be omitted or left empty.
+
 Output schema:
 {
   "mode": "...",
@@ -77,6 +86,9 @@ Output schema:
       "needs_clarification": []
     }
   ],
+  "answer_markdown": "required only when mode is advisor; structured Markdown answer for the user",
+  "key_points": ["required only when mode is advisor"],
+  "suggested_next_actions": ["required only when mode is advisor"],
   "needs_clarification": [],
   "eventlog_summary": "..."
 }

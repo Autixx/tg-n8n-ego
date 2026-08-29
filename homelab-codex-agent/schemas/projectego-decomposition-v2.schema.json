@@ -3,11 +3,11 @@
   "title": "ProjectEGO Decomposition Result V2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["mode", "source_summary", "items", "needs_clarification", "eventlog_summary"],
+  "required": ["mode", "source_summary", "needs_clarification", "eventlog_summary"],
   "properties": {
     "mode": {
       "type": "string",
-      "enum": ["abstract_idea", "structured_breakdown", "create_tasks"]
+      "enum": ["abstract_idea", "structured_breakdown", "create_tasks", "advisor"]
     },
     "source_summary": {
       "type": "string"
@@ -86,6 +86,21 @@
         }
       }
     },
+    "answer_markdown": {
+      "type": "string"
+    },
+    "key_points": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "suggested_next_actions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "needs_clarification": {
       "type": "array",
       "items": {
@@ -95,5 +110,22 @@
     "eventlog_summary": {
       "type": "string"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "advisor"
+          }
+        }
+      },
+      "then": {
+        "required": ["answer_markdown", "key_points", "suggested_next_actions"]
+      },
+      "else": {
+        "required": ["items"]
+      }
+    }
+  ]
 }

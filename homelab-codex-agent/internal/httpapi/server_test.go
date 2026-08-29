@@ -208,6 +208,36 @@ func TestV2ClientRequestIDIsEchoedStoredAndSentToRunner(t *testing.T) {
 	}
 }
 
+func TestV2AdvisorModeReturnsStructuredAnswer(t *testing.T) {
+	t.Parallel()
+	runner := &fakeRunner{result: `{
+		"mode":"advisor",
+		"source_summary":"User asks for UE5 project planning advice.",
+		"answer_markdown":"## Recommended order\nDefine scope, then prototype player movement.",
+		"key_points":["Answer the question","Do not create draft cards"],
+		"suggested_next_actions":["Review the answer and create tasks manually"],
+		"needs_clarification":[],
+		"eventlog_summary":"Answered in advisor mode."
+	}`}
+	cfg, server := newV2TestServer(t, runner)
+	response := performDecomposeRequest(t, server.Routes(), cfg.Token, `{
+		"thread_id":"projectego-advisor","mode":"advisor","source":"test","text":"How should I start a UE5 game?"
+	}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var payload decomposeResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Result.Mode != "advisor" || !strings.Contains(payload.Result.AnswerMarkdown, "Recommended order") {
+		t.Fatalf("result = %#v", payload.Result)
+	}
+	if len(payload.Result.Items) != 0 {
+		t.Fatalf("advisor returned items: %#v", payload.Result.Items)
+	}
+}
+
 func TestV2RejectsInvalidClientRequestID(t *testing.T) {
 	t.Parallel()
 	cfg, server := newV2TestServer(t, &fakeRunner{})
