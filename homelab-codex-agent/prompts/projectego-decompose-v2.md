@@ -56,6 +56,7 @@ create_tasks:
 - type is usually task, bug, or research.
 - acceptance_criteria must be filled when possible.
 - include labels codex-generated, task-proposal, manual-review.
+- if the input is a previous advisor answer, convert its actionable recommendations, ordering, dependencies, risks, and next actions into reviewable backlog items instead of answering again.
 
 advisor:
 - answer the user's question directly as a structured consultant.
