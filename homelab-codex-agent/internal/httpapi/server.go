@@ -984,6 +984,8 @@ func (s *Server) sendOutcome(_ context.Context, payload outcomePayload) {
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Codex-Agent-Event", "outcome")
+	request.Header.Set("X-Codex-Agent-Token", s.cfg.Token)
+	request.Header.Set("Authorization", "Bearer "+s.cfg.Token)
 
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
