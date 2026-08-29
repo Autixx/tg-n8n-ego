@@ -64,6 +64,13 @@ create_tasks:
 - do not collapse a clear pipeline into broad "consider/planning" items.
 - task titles must be imperative implementation actions, not reflections such as "consider", "define whether", "advisor notes", or "think about".
 - put the source heading, step/day number, prerequisites, concrete deliverables, and verification notes into details and acceptance_criteria.
+- each task must be implementation-ready for a developer: include what to create/change, where it belongs, expected UE5 assets/classes/Blueprints/Data Assets/levels when known, and how to verify it in editor or playtest.
+- details must be a rich action plan, not a one-sentence paraphrase. Include 4-8 concrete steps or checks in prose form, separated by semicolons if needed.
+- summary must stay concise, but details and acceptance_criteria must cover the practical work.
+- acceptance_criteria should usually contain 3-6 concrete checks. Avoid empty criteria unless the source gives no testable outcome.
+- dependencies must reference earlier task titles when this task relies on them.
+- needs_clarification is only for real blockers. Do not use it for optional confirmations such as engine version when a reasonable default exists.
+- for pipeline or first-week plans, keep the chronological order in item order and encode the phase/day/step in details.
 
 advisor:
 - answer the user's question directly as a structured consultant.
